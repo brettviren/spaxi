@@ -1,0 +1,98 @@
+#+title: spaxi — a pixi-like experience for Spack packages
+
+~spaxi~ explores two strategies for giving Spack-built software the
+smooth end-user experience that [[https://pixi.sh][pixi]] provides for conda packages.
+
+* Strategy 1: convert Spack installs to conda packages
+
+#+begin_example
+spaxi conda <spec>
+#+end_example
+
+Resolves ~<spec>~ against the installed Spack packages (as ~spack find~
+does).  The spec must resolve to exactly one installed package —
+qualify with ~/<hash>~ if it is ambiguous.  The package's install tree
+is converted into a package in the current conda format (a ~.conda~
+archive, ~conda_pkg_format_version~ 2) and placed in a local channel
+directory together with updated ~repodata.json~ indices.  ~pixi~ (or
+conda/mamba/rattler) can then install from that channel directly:
+
+#+begin_example
+$ spaxi --channel ./channel conda zstd
+zstd@1.5.7/wray76q channel/linux-64/zstd-1.5.7-wray76qs...conda
+gcc-runtime@11.3.0/54m5z4a channel/linux-64/gcc-runtime-11.3.0-54m5z4a...conda
+
+$ pixi init myproj && cd myproj
+$ pixi project channel add file:///path/to/channel
+$ pixi add zstd
+#+end_example
+
+Details of the conversion:
+
+- Transitive runtime (link/run) dependencies are converted too, so
+  the channel is self-contained (~--no-deps~ disables this).
+- The conda build string is the Spack DAG hash; runtime dependencies
+  become exact ~name version build~ pins.
+- ~glibc~ maps to the ~__glibc~ virtual package rather than being
+  converted.  External (non-Spack-built) packages are skipped.
+- Files embedding the Spack install prefix are recorded in
+  ~info/paths.json~ with a ~prefix_placeholder~ (text or binary mode)
+  so the installer relocates them into the target environment, the
+  same mechanism conda-build packages use.  Spack's long
+  hash-qualified prefixes make good placeholders.
+- The original ~spec.json~ is preserved as ~info/spack-spec.json~ for
+  provenance.
+
+* Strategy 2: pixi-like workflow, purely Spack
+
+~spaxi~ offers pixi-equivalent subcommands that stay entirely within
+Spack — no conda involved.  A project directory holds a ~spaxi.toml~
+manifest (analogous to ~pixi.toml~); a Spack environment under
+~.spaxi/env/~ realizes it and maintains a merged view (bin/, lib/, …)
+at ~.spaxi/envs/default/~.  Spack does the solving and installing, so
+Spack binary build caches are used whenever the Spack configuration
+provides them.
+
+#+begin_example
+$ spaxi init            # create spaxi.toml in the current directory
+$ spaxi add zstd@1.5:   # add a spack spec and install it
+$ spaxi list            # installed packages in the environment
+$ spaxi tree            # dependency tree
+$ spaxi info            # project paths and dependencies
+$ spaxi remove zstd     # drop a dependency
+$ spaxi install         # (re)install everything in spaxi.toml
+#+end_example
+
+The manifest keys dependencies by package name with the rest of the
+spack spec as the constraint:
+
+#+begin_example
+[project]
+name = "demo"
+
+[dependencies]
+zstd = "@1.5:"
+#+end_example
+
+* Configuration
+
+Following the XDG convention, ~spaxi~ reads
+~~/.config/spaxi/config.toml~ (or the file given with ~-c/--config~).
+Values are layered last-one-wins: environment variables → config file
+→ command line options.
+
+| section.key     | environment variable  | command line  | meaning                       |
+|-----------------+-----------------------+---------------+-------------------------------|
+| ~spack.exe~     | ~SPAXI_SPACK_EXE~     | ~--spack-exe~ | path to the spack executable  |
+| ~conda.channel~ | ~SPAXI_CONDA_CHANNEL~ | ~--channel~   | local conda channel directory |
+
+If no spack executable is configured, ~spaxi~ tries ~./spack/bin/spack~
+then ~spack~ on ~$PATH~.
+
+* Development
+
+#+begin_example
+uv sync              # update development area
+uv run pytest        # run tests (integration tests use ./spack)
+uv run spaxi         # run the CLI
+#+end_example
