@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "spaxi",
+  "project_id": "e77c4c3b-28dc-410b-8afd-4368151a64da"
+}
