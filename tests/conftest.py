@@ -13,9 +13,11 @@ needs_spack = pytest.mark.skipif(
 
 @pytest.fixture
 def spack_sandbox(tmp_path, monkeypatch):
-    """Point spack's user-level config and cache at writable paths."""
-    monkeypatch.setenv("SPACK_USER_CONFIG_PATH", str(tmp_path / "spack-user"))
-    monkeypatch.setenv("SPACK_USER_CACHE_PATH", str(tmp_path / "spack-cache"))
+    """Point spack's config and cache paths at local writable dirs."""
+    cache = Path(__file__).parent.parent / ".cache" / "spack-tests"
+    monkeypatch.setenv("SPACK_USER_CONFIG_PATH", str(cache / "user-config"))
+    monkeypatch.setenv("SPACK_USER_CACHE_PATH", str(cache / "user-cache"))
+    monkeypatch.setenv("SPACK_SYSTEM_CONFIG_PATH", str(cache / "system-config"))
     return SPACK_EXE
 
 

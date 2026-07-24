@@ -14,3 +14,10 @@ wheels/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+spack
+.claude
+
+# Local spack/spaxi work areas
+.cache/
+channel/
+buildcache/

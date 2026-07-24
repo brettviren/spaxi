@@ -86,7 +86,10 @@ def convert_spec(
         else:
             built = conda.build_conda_package(prefix, meta, dest.parent)
             final = channel_mod.add_package(Path(channel_dir), built, meta.index_json())
-            results.append(Converted(meta.name, meta.version, node["hash"], final))
+            # Binary prefix replacement requires the install-time env
+            # prefix to fit within the placeholder (the spack prefix).
+            note = f"end-user env prefix must be < {len(str(prefix))} chars"
+            results.append(Converted(meta.name, meta.version, node["hash"], final, note))
 
         if with_deps:
             for dep_node in dep_nodes.values():

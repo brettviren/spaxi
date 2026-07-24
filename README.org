@@ -89,6 +89,12 @@ Values are layered last-one-wins: environment variables → config file
 If no spack executable is configured, ~spaxi~ tries ~./spack/bin/spack~
 then ~spack~ on ~$PATH~.
 
+* Documentation
+
+See [[file:docs/index.html][docs/index.html]] for a full walkthrough of both
+strategies from the provider and end-user perspectives, with runnable
+scripts in [[file:docs/examples/][docs/examples/]].
+
 * Development
 
 #+begin_example

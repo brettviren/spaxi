@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>spaxi — a pixi-like experience for Spack packages</title>
+<style>
+:root {
+  --bg: #fcfcfa;
+  --fg: #24292f;
+  --muted: #6a737d;
+  --accent: #0b6e4f;
+  --accent2: #1a5fb4;
+  --card: #ffffff;
+  --border: #d8dee4;
+  --code-bg: #f3f4f6;
+  --pre-bg: #1f2430;
+  --pre-fg: #d8dee9;
+  --warn-bg: #fff8e6;
+  --warn-border: #e0b84c;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --fg: #d5dbe3;
+    --muted: #8b949e;
+    --accent: #4fd1a5;
+    --accent2: #6ca9f0;
+    --card: #1b1f26;
+    --border: #30363d;
+    --code-bg: #262c36;
+    --pre-bg: #10131a;
+    --pre-fg: #cdd6e4;
+    --warn-bg: #2b2413;
+    --warn-border: #8a6d1f;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+main { max-width: 60rem; margin: 0 auto; padding: 0 1.25rem 4rem; }
+header.hero {
+  padding: 3rem 1.25rem 2.25rem;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, var(--bg)), var(--bg));
+}
+.hero-inner { max-width: 60rem; margin: 0 auto; }
+h1 { font-size: 2rem; margin: 0 0 .5rem; }
+h1 .x { color: var(--accent); }
+.tagline { color: var(--muted); font-size: 1.1rem; margin: 0; max-width: 44rem; }
+h2 {
+  font-size: 1.45rem;
+  margin: 3rem 0 .75rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+h3 { font-size: 1.1rem; margin: 2rem 0 .5rem; }
+h2 .tag, h3 .tag {
+  font-size: .72rem;
+  font-weight: 600;
+  vertical-align: middle;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: .15rem .6rem;
+  margin-left: .6rem;
+}
+.tag.provider { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+.tag.user { background: color-mix(in srgb, var(--accent2) 15%, transparent); color: var(--accent2); }
+p { margin: .8rem 0; }
+a { color: var(--accent2); }
+code {
+  font: .88em/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  background: var(--code-bg);
+  padding: .1em .35em;
+  border-radius: 4px;
+}
+pre {
+  background: var(--pre-bg);
+  color: var(--pre-fg);
+  padding: 1rem 1.2rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+pre code { background: none; padding: 0; color: inherit; font-size: .85rem; }
+pre .cmt { color: #8a93a6; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+.card h3 { margin-top: .25rem; }
+.card .kicker { font-size: .8rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.card:nth-child(2) .kicker { color: var(--accent2); }
+.flow {
+  display: flex; flex-wrap: wrap; gap: .4rem; align-items: center;
+  font: .82rem/1.4 ui-monospace, Menlo, Consolas, monospace;
+  margin: .75rem 0 0;
+}
+.flow span {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: .2rem .55rem;
+  white-space: nowrap;
+}
+.flow em { font-style: normal; color: var(--muted); }
+.note {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: 8px;
+  padding: .75rem 1.1rem;
+  margin: 1.25rem 0;
+}
+.note strong { display: block; margin-bottom: .25rem; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+td code { white-space: nowrap; }
+.tablewrap { overflow-x: auto; }
+footer { color: var(--muted); font-size: .85rem; margin-top: 4rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+ol li, ul li { margin: .35rem 0; }
+.scriptref { font-size: .85rem; color: var(--muted); margin: -0.25rem 0 .5rem; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <h1>spa<span class="x">x</span>i</h1>
+    <p class="tagline">A <a href="https://pixi.sh">pixi</a>-like end-user experience for
+    <a href="https://spack.io">Spack</a>-built software — either by converting Spack installs
+    into genuine conda packages, or by wrapping Spack itself in a pixi-shaped workflow.</p>
+  </div>
+</header>
+
+<main>
+
+<h2 id="overview">Two strategies</h2>
+
+<p>Both strategies involve two roles: a <strong>provider</strong> who builds software with
+Spack and publishes it, and an <strong>end-user</strong> who installs it into per-project
+environments. They differ in what crosses the wire.</p>
+
+<div class="cards">
+  <div class="card">
+    <span class="kicker">Strategy 1 · conda channel</span>
+    <h3>Spack builds → conda packages → pixi</h3>
+    <p>The provider converts Spack install trees into <code>.conda</code> packages
+    (<code>spaxi conda</code>) and serves them as a static conda channel.
+    End-users need only pixi — no Spack at all.</p>
+    <div class="flow">
+      <span>spack install</span><em>→</em>
+      <span>spaxi conda</span><em>→</em>
+      <span>channel/</span><em>→</em>
+      <span>pixi add</span>
+    </div>
+  </div>
+  <div class="card">
+    <span class="kicker">Strategy 2 · pure Spack</span>
+    <h3>Spack build cache → spaxi project</h3>
+    <p>Everything stays in Spack. The provider publishes a binary build cache;
+    end-users drive per-project Spack environments through pixi-equivalent
+    <code>spaxi</code> subcommands.</p>
+    <div class="flow">
+      <span>spack install</span><em>→</em>
+      <span>buildcache push</span><em>→</em>
+      <span>mirror</span><em>→</em>
+      <span>spaxi add</span>
+    </div>
+  </div>
+</div>
+
+<p>All scripts referenced below live in <a href="examples/">docs/examples/</a> and are
+runnable as-is. Each one first sources
+<a href="examples/spack-env.sh"><code>spack-env.sh</code></a>, which isolates Spack's
+configuration and caches under a local <code>.cache/</code> directory:</p>
+
+<pre><code>SPAXI_CACHE="${SPAXI_CACHE:-$PWD/.cache}"
+
+export SPACK_USER_CONFIG_PATH="$SPAXI_CACHE/spack/user-config"
+export SPACK_USER_CACHE_PATH="$SPAXI_CACHE/spack/user-cache"
+export SPACK_SYSTEM_CONFIG_PATH="$SPAXI_CACHE/spack/system-config"</code></pre>
+
+
+<h2 id="s1">Strategy 1 — publish a conda channel, install with pixi</h2>
+
+<p><code>spaxi conda &lt;spec&gt;</code> resolves the spec against the installed Spack
+packages (it must match exactly one — qualify with <code>/&lt;hash&gt;</code> if ambiguous)
+and converts the install tree into a package in the current conda format: a
+<code>.conda</code> archive (<code>conda_pkg_format_version</code> 2), placed into a
+channel directory with maintained <code>repodata.json</code> indices. Transitive
+runtime dependencies are converted along with it, so the channel is self-contained.</p>
+
+<ul>
+  <li>The conda <em>build string</em> is the Spack DAG hash; runtime dependencies become
+      exact <code>name version build</code> pins, so a channel can carry many builds of
+      one version side by side.</li>
+  <li><code>glibc</code> maps to conda's <code>__glibc</code> virtual package;
+      other external (non-Spack-built) dependencies are skipped.</li>
+  <li>Files embedding the Spack prefix are recorded in <code>info/paths.json</code>
+      with a <code>prefix_placeholder</code> (text or binary mode). The installer —
+      pixi, conda, mamba — rewrites them to the target environment prefix at install
+      time, exactly as it does for conda-build packages. RPATHs therefore point into
+      the end-user environment after installation.</li>
+  <li>The original <code>spec.json</code> rides along as <code>info/spack-spec.json</code>
+      for provenance.</li>
+</ul>
+
+<div class="note">
+  <strong>Prefix length is the one hard constraint.</strong>
+  Binary relocation rewrites the placeholder in place, so the end-user environment
+  prefix must be <em>no longer</em> than the provider's Spack install prefix.
+  Providers should set <code>spack config add config:install_tree:padded_length:128</code>
+  (or more) <em>before</em> building, which pads install prefixes the same way Spack
+  does for its own public build caches. <code>spaxi conda</code> prints the resulting
+  limit for each package it builds.
+</div>
+
+<h3>Provider <span class="tag provider">provider</span></h3>
+<p class="scriptref">Script: <a href="examples/provider-conda.sh"><code>provider-conda.sh</code></a> — <code>provider-conda.sh [spec] [channel-dir]</code></p>
+
+<ol>
+  <li>Isolate Spack configuration (source <code>spack-env.sh</code>).</li>
+  <li>Pad install prefixes: <code>spack config add config:install_tree:padded_length:128</code>.</li>
+  <li>Build the software: <code>spack install zstd</code>.</li>
+  <li>Convert and index: <code>spaxi --channel ./channel conda zstd</code>.</li>
+  <li>Publish <code>channel/</code> via any static file server (or share the path).</li>
+  <li>Tell end-users the glibc version of the build machine
+      (<code>spack find --format '{version}' glibc</code>).</li>
+</ol>
+
+<pre><code><span class="cmt"># the heart of provider-conda.sh</span>
+. spack-env.sh
+"$SPACK" config add config:install_tree:padded_length:128
+"$SPACK" install "$SPEC"
+spaxi --spack-exe "$SPACK" --channel "$CHANNEL" conda "$SPEC"</code></pre>
+
+<h3>End-user <span class="tag user">end-user</span></h3>
+<p class="scriptref">Script: <a href="examples/enduser-pixi.sh"><code>enduser-pixi.sh</code></a> — <code>enduser-pixi.sh &lt;channel-url&gt; [package] [glibc-version]</code></p>
+
+<p>The end-user machine needs pixi only. Two things to know:</p>
+<ol>
+  <li>pixi solves against <em>declared</em> system requirements (glibc 2.17 by default),
+      not the detected host glibc. Spack-built packages carry a
+      <code>__glibc >=</code> constraint from the provider's build machine, so the
+      project must declare at least that version.</li>
+  <li>Keep the project path reasonably short (see the prefix-length note above).</li>
+</ol>
+
+<pre><code><span class="cmt"># the heart of enduser-pixi.sh</span>
+pixi init --channel "$CHANNEL" .
+
+cat &gt;&gt; pixi.toml &lt;&lt;EOF
+
+[system-requirements]
+libc = { family = "glibc", version = "$GLIBC" }
+EOF
+
+pixi add zstd
+pixi run some-command      <span class="cmt"># or: pixi shell</span></code></pre>
+
+<p>After <code>pixi add</code>, the environment at <code>.pixi/envs/default</code> contains
+the Spack-built libraries with all prefixes — including RPATHs — rewritten to point into
+the pixi environment.</p>
+
+
+<h2 id="s2">Strategy 2 — pixi-shaped workflow, purely Spack</h2>
+
+<p>No conda anywhere: a spaxi <em>project</em> is a directory with a
+<code>spaxi.toml</code> manifest (the analogue of <code>pixi.toml</code>). A Spack
+environment under <code>.spaxi/env/</code> realizes the manifest and maintains a merged
+view — <code>bin/</code>, <code>lib/</code>, <code>include/</code> — at
+<code>.spaxi/envs/default/</code>. Spack does all solving and installing, so binaries
+come from any configured Spack build cache and are relocated by Spack itself; there is
+no prefix-length concern in this strategy.</p>
+
+<pre><code>[project]
+name = "demo"
+
+[dependencies]
+zstd = "@1.5:"        <span class="cmt"># key = package, value = rest of the spack spec</span></code></pre>
+
+<h3>Provider <span class="tag provider">provider</span></h3>
+<p class="scriptref">Script: <a href="examples/provider-spack.sh"><code>provider-spack.sh</code></a> — <code>provider-spack.sh [spec] [mirror-dir]</code></p>
+
+<p>The provider's job is to publish a Spack <em>binary build cache</em> so end-users
+never compile:</p>
+
+<pre><code><span class="cmt"># the heart of provider-spack.sh</span>
+. spack-env.sh
+"$SPACK" install "$SPEC"
+"$SPACK" buildcache push --unsigned "$MIRROR" "$SPEC"
+"$SPACK" buildcache update-index "$MIRROR"</code></pre>
+
+<p>Publish the mirror directory via any static file server. For production use, sign
+the packages (drop <code>--unsigned</code>) and distribute the public key.</p>
+
+<h3>End-user <span class="tag user">end-user</span></h3>
+<p class="scriptref">Script: <a href="examples/enduser-spaxi.sh"><code>enduser-spaxi.sh</code></a> — <code>enduser-spaxi.sh [package] [mirror-url]</code></p>
+
+<p>The end-user needs Spack and spaxi. Register the provider's build cache once, then
+work entirely in pixi-style commands:</p>
+
+<pre><code><span class="cmt"># the heart of enduser-spaxi.sh</span>
+. spack-env.sh
+"$SPACK" mirror add --unsigned provider "$MIRROR"
+
+spaxi init --name demo
+spaxi add zstd            <span class="cmt"># solve + install (from the build cache) + view</span>
+spaxi list
+spaxi tree
+export PATH="$PWD/.spaxi/envs/default/bin:$PATH"</code></pre>
+
+<h3>Command reference</h3>
+<div class="tablewrap">
+<table>
+  <tr><th>spaxi</th><th>pixi analogue</th><th>what it does</th></tr>
+  <tr><td><code>spaxi init [dir]</code></td><td><code>pixi init</code></td>
+      <td>Create <code>spaxi.toml</code> and the project skeleton.</td></tr>
+  <tr><td><code>spaxi add &lt;spec&gt;…</code></td><td><code>pixi add</code></td>
+      <td>Add Spack specs to the manifest, solve, install, refresh the view.</td></tr>
+  <tr><td><code>spaxi remove &lt;name&gt;…</code></td><td><code>pixi remove</code></td>
+      <td>Drop dependencies and re-realize the environment.</td></tr>
+  <tr><td><code>spaxi install</code></td><td><code>pixi install</code></td>
+      <td>Realize everything in <code>spaxi.toml</code> (idempotent).</td></tr>
+  <tr><td><code>spaxi list</code></td><td><code>pixi list</code></td>
+      <td>Installed packages in the project environment.</td></tr>
+  <tr><td><code>spaxi tree</code></td><td><code>pixi tree</code></td>
+      <td>Dependency tree of the environment.</td></tr>
+  <tr><td><code>spaxi info</code></td><td><code>pixi info</code></td>
+      <td>Project name, paths and dependencies.</td></tr>
+</table>
+</div>
+
+
+<h2 id="config">Configuration</h2>
+
+<p>spaxi follows the freedesktop XDG convention: it reads
+<code>~/.config/spaxi/config.toml</code> or the file given with <code>-c/--config</code>.
+Values are layered last-one-wins: <em>environment variables → config file → command
+line options</em>.</p>
+
+<div class="tablewrap">
+<table>
+  <tr><th>config key</th><th>environment variable</th><th>command line</th><th>meaning</th></tr>
+  <tr><td><code>spack.exe</code></td><td><code>SPAXI_SPACK_EXE</code></td>
+      <td><code>--spack-exe</code></td><td>Path to the spack executable
+      (default: <code>./spack/bin/spack</code>, then <code>spack</code> on <code>$PATH</code>).</td></tr>
+  <tr><td><code>conda.channel</code></td><td><code>SPAXI_CONDA_CHANNEL</code></td>
+      <td><code>--channel</code></td><td>Local conda channel directory for
+      <code>spaxi conda</code> (default: <code>./channel</code>).</td></tr>
+</table>
+</div>
+
+<p>When exercising Spack itself, keep its state local and reproducible by setting the
+three <code>SPACK_*_PATH</code> variables shown at the top — every example script does
+this automatically.</p>
+
+<footer>
+  spaxi — an exploration of Spack-powered, pixi-flavored software distribution.
+  Generated docs live in <code>docs/</code>; scripts in <code>docs/examples/</code>.
+</footer>
+
+</main>
+</body>
+</html>
