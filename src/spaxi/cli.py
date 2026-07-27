@@ -9,9 +9,10 @@ from pathlib import Path
 
 import click
 
-from . import convert
+from . import addspec, convert
 from .conda import CondaBuildError
 from .config import Config
+from .flags import FlagCollisionError
 from .project import Project, ProjectError, find_project
 from .spack import Spack, SpackError, locate_spack
 
@@ -87,12 +88,43 @@ def conda_cmd(ctx, spec, deps, force):
         results = convert.convert_spec(
             main.spack(), " ".join(spec), main.channel,
             with_deps=deps, force=force)
-    except (SpackError, CondaBuildError) as err:
+    except (SpackError, CondaBuildError, FlagCollisionError) as err:
         _fail(str(err))
     for res in results:
         where = res.path if res.path else ""
         note = f" ({res.note})" if res.note else ""
         click.echo(f"{res.name}@{res.version}/{res.hash[:7]} {where}{note}")
+
+
+@cli.command("add-spec")
+@click.argument("spec", nargs=-1)
+@click.option("--exact", is_flag=True,
+              help="Pin the exact concretized Spack hash as a hash:<hash> flag.")
+@click.option("-c", "--config", "config_file", type=click.Path(path_type=Path),
+              default=None,
+              help="pixi.toml to create or update (default: ./pixi.toml).")
+@click.pass_context
+def add_spec_cmd(ctx, spec, exact, config_file):
+    """Add a Spack SPEC to a pixi.toml as a flag-based dependency.
+
+    SPEC is concretized with Spack and its variants are rendered as conda
+    'flags' (e.g. +programs -> programs:true, compression=zlib ->
+    compression:zlib).  With --exact the concretized DAG hash is added as a
+    hash:<hash> flag, pinning the whole transitive closure.
+    """
+    _help_if_bare(ctx, spec)
+    main = ctx.obj
+    path = config_file or Path("pixi.toml")
+    try:
+        result = addspec.add_spec(main.spack(), " ".join(spec), path, exact=exact)
+    except (SpackError, FlagCollisionError) as err:
+        _fail(str(err))
+    verb = "created" if result.created else "updated"
+    click.echo(f"{verb} {result.path}")
+    click.echo(f"  {result.name} {{ flags = {result.flags} }}")
+    if result.created:
+        click.echo("  note: fill in [workspace] channels and platforms before "
+                   "'pixi install'")
 
 
 # ----------------------------------------------------------------------

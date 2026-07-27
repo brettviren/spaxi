@@ -71,6 +71,28 @@ def test_meta_from_spec_missing_dep_node(fake_prefix):
         conda.meta_from_spec(node, {})
 
 
+def test_meta_from_spec_flags():
+    node = {
+        "name": "zstd", "version": "1.5.7", "hash": "h" * 32,
+        "arch": {"platform": "linux", "target": {"name": "zen4", "parents": []}},
+        "parameters": {"programs": True, "compression": ["zlib"]},
+        "dependencies": [],
+    }
+    meta = conda.meta_from_spec(node, {})
+    assert "programs:true" in meta.flags
+    assert "compression:zlib" in meta.flags
+    assert "compression_set:zlib" in meta.flags
+    assert f"hash:{node['hash']}" in meta.flags
+
+
+def test_index_json_includes_flags():
+    meta = conda.PackageMeta(
+        "x", "1", "b", "linux-64", flags=["programs:true", "hash:b"])
+    assert meta.index_json()["flags"] == ["programs:true", "hash:b"]
+    # omitted entirely when there are no flags
+    assert "flags" not in conda.PackageMeta("x", "1", "b", "linux-64").index_json()
+
+
 def test_build_conda_package(fake_prefix, tmp_path):
     prefix, node = fake_prefix
     meta = conda.PackageMeta(

@@ -26,6 +26,8 @@ from pathlib import Path
 
 import zstandard
 
+from .flags import variant_flags
+
 # Spack-internal metadata directory inside every install prefix.
 SPACK_METADIR = ".spack"
 
@@ -155,6 +157,7 @@ class PackageMeta:
     depends: list[str] = field(default_factory=list)
     build_number: int = 0
     license: str | None = None
+    flags: list[str] = field(default_factory=list)
 
     @property
     def filestem(self) -> str:
@@ -164,7 +167,7 @@ class PackageMeta:
         platform, arch = self.subdir.split("-", 1)
         if platform == "osx":
             platform = "darwin"
-        return {
+        index = {
             "name": self.name,
             "version": self.version,
             "build": self.build,
@@ -176,6 +179,11 @@ class PackageMeta:
             "license": self.license,
             "timestamp": int(time.time() * 1000),
         }
+        # Variant flags (CEP-45): let clients select this build without
+        # matching the opaque hash build string.
+        if self.flags:
+            index["flags"] = self.flags
+        return index
 
 
 def meta_from_spec(node: dict, dep_nodes: dict[str, dict]) -> PackageMeta:
@@ -210,6 +218,7 @@ def meta_from_spec(node: dict, dep_nodes: dict[str, dict]) -> PackageMeta:
         build=node["hash"],
         subdir=subdir_for(node),
         depends=sorted(depends),
+        flags=variant_flags(node, include_hash=True),
     )
 
 

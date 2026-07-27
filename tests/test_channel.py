@@ -30,6 +30,18 @@ def test_add_package(tmp_path):
     assert noarch["packages.conda"] == {}
 
 
+def test_add_package_records_flags(tmp_path):
+    pkg = tmp_path / "frob-1.2.3-abc.conda"
+    pkg.write_bytes(b"x")
+    index = {"name": "frob", "version": "1.2.3", "build": "abc",
+             "subdir": "linux-64", "flags": ["programs:true", "hash:abc"]}
+    chan = tmp_path / "channel"
+    channel.add_package(chan, pkg, index)
+    repodata = json.loads((chan / "linux-64" / "repodata.json").read_text())
+    rec = repodata["packages.conda"]["frob-1.2.3-abc.conda"]
+    assert rec["flags"] == ["programs:true", "hash:abc"]
+
+
 def test_add_package_updates_existing_repodata(tmp_path):
     chan = tmp_path / "channel"
     for build in ("aaa", "bbb"):

@@ -10,6 +10,18 @@ needs_spack = pytest.mark.skipif(
     not SPACK_EXE.is_file(), reason="no bundled spack installation"
 )
 
+needs_pixi = pytest.mark.skipif(
+    shutil.which("pixi") is None, reason="pixi not on PATH"
+)
+
+
+@pytest.fixture
+def pixi_env(tmp_path, monkeypatch):
+    """Point pixi's global home and package cache at writable temp dirs."""
+    monkeypatch.setenv("PIXI_HOME", str(tmp_path / "pixi-home"))
+    monkeypatch.setenv("RATTLER_CACHE_DIR", str(tmp_path / "rattler-cache"))
+    return shutil.which("pixi")
+
 
 @pytest.fixture
 def spack_sandbox(tmp_path, monkeypatch):

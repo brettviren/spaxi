@@ -106,6 +106,22 @@ class Spack:
             )
         return matches[0]
 
+    def concretize_one(self, spec: str) -> dict:
+        """Concretize ``spec`` (without installing) and return its root node.
+
+        Uses ``spack spec --json``, so it works for specs that are not yet
+        installed -- useful for authoring a pixi.toml.  The first node in the
+        result is the root of the concretized DAG.
+        """
+        out = self.run("spec", "--json", spec)
+        try:
+            nodes = json.loads(out)["spec"]["nodes"]
+        except (json.JSONDecodeError, KeyError, IndexError) as err:
+            raise SpackError(f"could not concretize spec '{spec}': {err}")
+        if not nodes:
+            raise SpackError(f"spec '{spec}' concretized to no packages")
+        return nodes[0]
+
     def prefix(self, spec_hash: str) -> Path:
         """Return the install prefix of an installed package by hash."""
         out = self.run("find", "--format", "{prefix}", f"/{spec_hash}")

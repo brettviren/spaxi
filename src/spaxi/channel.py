@@ -83,6 +83,10 @@ def add_package(channel: Path, package: Path, index: dict) -> Path:
         "md5": md5,
         "size": size,
     }
+    # Variant flags (CEP-45) must live on the repodata record for the solver
+    # to filter on them.
+    if index.get("flags"):
+        record["flags"] = index["flags"]
     repodata = _load_repodata(subdir_path, subdir)
     repodata["packages.conda"][dest.name] = record
     _write_repodata(subdir_path, repodata)
