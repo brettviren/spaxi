@@ -17,6 +17,13 @@ def read_inner_tar(conda_file, member):
     return tarfile.open(fileobj=io.BytesIO(data))
 
 
+def test_human_bytes():
+    assert conda._human_bytes(0) == "0 B"
+    assert conda._human_bytes(512) == "512 B"
+    assert conda._human_bytes(1536) == "1.5 KiB"
+    assert conda._human_bytes(5 * 1024**3) == "5.0 GiB"
+
+
 def test_subdir_for():
     node = {"arch": {"platform": "linux",
                      "target": {"name": "zen4", "parents": ["x86_64_v4"]}}}
@@ -99,8 +106,11 @@ def test_build_conda_package(fake_prefix, tmp_path):
         name="frob", version="1.2.3", build=node["hash"], subdir="linux-64",
         depends=["__glibc >=2.36"],
     )
-    out = conda.build_conda_package(prefix, meta, tmp_path / "out")
+    result = conda.build_conda_package(prefix, meta, tmp_path / "out")
+    out = result.path
     assert out.name == f"frob-1.2.3-{node['hash']}.conda"
+    # fake_prefix has a binary file embedding the prefix -> relocation cap.
+    assert result.prefix_limit == len(str(prefix.resolve()))
 
     with zipfile.ZipFile(out) as zf:
         names = zf.namelist()
@@ -128,8 +138,56 @@ def test_build_conda_package(fake_prefix, tmp_path):
     assert str(prefix).encode() in payload
 
 
-def test_build_conda_package_empty(tmp_path):
-    (tmp_path / "empty").mkdir()
+def test_build_conda_package_compression_level(fake_prefix, tmp_path):
+    prefix, node = fake_prefix
+    meta = conda.PackageMeta(
+        name="frob", version="1.2.3", build=node["hash"], subdir="linux-64",
+    )
+    out = conda.build_conda_package(
+        prefix, meta, tmp_path / "out", compression_level=1).path
+    # A valid .conda is produced at a non-default level and stays readable.
+    info = read_inner_tar(out, f"info-{meta.filestem}.tar.zst")
+    assert json.load(info.extractfile("info/index.json"))["name"] == "frob"
+
+
+def test_build_conda_package_text_only_unconstrained(tmp_path):
+    # Text prefix replacement can grow, so a package that embeds the prefix
+    # only in text files imposes no install-prefix length cap.
+    prefix = tmp_path / "scriptpkg-1.0-deadbeef"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / ".spack").mkdir()
+    (prefix / "bin" / "run").write_text(f"#!/bin/sh\nexec {prefix}/libexec/x\n")
+    meta = conda.PackageMeta("scriptpkg", "1.0", "deadbeef", "linux-64")
+    result = conda.build_conda_package(prefix, meta, tmp_path / "out")
+    assert result.prefix_limit is None
+
+
+def test_build_conda_package_missing_prefix(tmp_path):
     meta = conda.PackageMeta("x", "1", "b", "linux-64")
     with pytest.raises(conda.CondaBuildError):
-        conda.build_conda_package(tmp_path / "empty", meta, tmp_path / "out")
+        conda.build_conda_package(tmp_path / "nonexistent", meta, tmp_path / "out")
+
+
+def test_build_conda_package_empty_metapackage(tmp_path):
+    # Spack "bundle" packages (e.g. glx) install only a .spack metadir and
+    # no payload; they must still convert to a valid empty metapackage so
+    # dependents can resolve them from the channel.
+    prefix = tmp_path / "glx-1.4-deadbeef"
+    (prefix / ".spack").mkdir(parents=True)
+    meta = conda.PackageMeta("glx", "1.4", "deadbeef", "linux-64",
+                             depends=["mesa 23.0 abc123"])
+    result = conda.build_conda_package(prefix, meta, tmp_path / "out")
+    out = result.path
+    assert out.is_file()
+    # No files at all, so no binary-relocation constraint.
+    assert result.prefix_limit is None
+
+    info = read_inner_tar(out, f"info-{meta.filestem}.tar.zst")
+    index = json.load(info.extractfile("info/index.json"))
+    assert index["depends"] == ["mesa 23.0 abc123"]
+    paths = json.load(info.extractfile("info/paths.json"))
+    assert paths["paths"] == []
+    assert info.extractfile("info/files").read() == b""
+
+    pkg = read_inner_tar(out, f"pkg-{meta.filestem}.tar.zst")
+    assert pkg.getnames() == []

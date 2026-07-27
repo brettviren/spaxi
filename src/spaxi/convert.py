@@ -2,14 +2,26 @@
 
 Resolves a user spec against the installed Spack packages and converts
 the resulting install tree(s) into .conda packages in a local channel.
+
+Conversion runs in two phases.  Discovery walks the runtime-dependency
+DAG with ``spack`` (which holds a database lock, so it stays
+sequential).  The build phase then converts each package -- scan, hash
+and zstd, all CPU-bound and independent -- and may run in a thread pool
+(``jobs``); only the shared ``repodata.json`` update is serialized.
 """
 
+import logging
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 
 from . import channel as channel_mod
 from . import conda
-from .spack import Spack, SpackError
+from .spack import Spack
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -21,6 +33,18 @@ class Converted:
     hash: str
     path: Path | None  # None if skipped (already in channel, external, ...)
     note: str = ""
+    # Longest end-user env prefix this package tolerates (binary relocation),
+    # or None if unconstrained / not built this run.
+    prefix_limit: int | None = None
+
+
+@dataclass
+class _Plan:
+    """A resolved package to convert, with its runtime dependency nodes."""
+
+    node: dict
+    dep_nodes: dict[str, dict]  # hash -> full node, runtime deps only
+    prefix: Path
 
 
 def _node_is_external(node: dict, prefix: Path) -> bool:
@@ -31,30 +55,33 @@ def _node_is_external(node: dict, prefix: Path) -> bool:
     return not (prefix / conda.SPACK_METADIR).is_dir()
 
 
-def convert_spec(
-    spack: Spack,
-    spec: str,
-    channel_dir: Path,
-    with_deps: bool = True,
-    force: bool = False,
-) -> list[Converted]:
-    """Convert the single installed package matching ``spec``.
+def _resolve_jobs(jobs: int) -> int:
+    """Map the ``--jobs`` option to a worker count (0 -> one per CPU)."""
+    if jobs == 0:
+        return os.cpu_count() or 1
+    return max(1, jobs)
 
-    With ``with_deps`` (default) the transitive runtime (link/run)
-    dependencies are converted as well so the channel is
-    self-contained.  Existing packages in the channel are skipped
-    unless ``force``.  Returns one Converted record per visited spec.
+
+def _discover(spack: Spack, root: dict, with_deps: bool) -> list[_Plan]:
+    """Walk the runtime DAG into a de-duplicated, ordered build plan.
+
+    All ``spack`` invocations happen here so the parallel build phase
+    touches only the filesystem.  Externals are recorded but not
+    recursed into (their subtree lives outside the spack store).
     """
-    root = spack.resolve_one(spec)
     todo = [root]
     seen: set[str] = set()
-    results: list[Converted] = []
+    plan: list[_Plan] = []
 
     while todo:
         node = todo.pop(0)
         if node["hash"] in seen:
             continue
         seen.add(node["hash"])
+
+        log.debug("resolving %s@%s/%s (%d queued, %d resolved)",
+                  node["name"], node["version"], node["hash"][:7],
+                  len(todo), len(seen) - 1)
 
         # Gather full nodes for runtime deps: needed both for the
         # depends list and (optionally) for recursive conversion.
@@ -63,37 +90,106 @@ def convert_spec(
             deptypes = set(dep.get("parameters", {}).get("deptypes", []))
             if not deptypes & conda.RUNTIME_DEPTYPES:
                 continue
+            log.debug("resolving dependency %s/%s of %s",
+                      dep["name"], dep["hash"][:7], node["name"])
             dep_nodes[dep["hash"]] = spack.resolve_one(f"/{dep['hash']}")
 
         prefix = spack.prefix(node["hash"])
+        plan.append(_Plan(node, dep_nodes, prefix))
+
         if _node_is_external(node, prefix):
-            if node["name"] in conda.VIRTUAL_PACKAGES:
-                note = f"external, satisfied by {conda.VIRTUAL_PACKAGES[node['name']]} virtual package"
-            else:
-                note = "external to spack, not converted"
-            results.append(
-                Converted(node["name"], str(node["version"]), node["hash"], None, note)
-            )
-            continue
-
-        meta = conda.meta_from_spec(node, dep_nodes)
-        dest = Path(channel_dir) / meta.subdir / f"{meta.filestem}.conda"
-        if dest.exists() and not force:
-            results.append(
-                Converted(meta.name, meta.version, node["hash"], dest,
-                          "already in channel, skipped")
-            )
-        else:
-            built = conda.build_conda_package(prefix, meta, dest.parent)
-            final = channel_mod.add_package(Path(channel_dir), built, meta.index_json())
-            # Binary prefix replacement requires the install-time env
-            # prefix to fit within the placeholder (the spack prefix).
-            note = f"end-user env prefix must be < {len(str(prefix))} chars"
-            results.append(Converted(meta.name, meta.version, node["hash"], final, note))
-
+            continue  # do not recurse into externals
         if with_deps:
             for dep_node in dep_nodes.values():
                 if dep_node["name"] not in conda.VIRTUAL_PACKAGES:
                     todo.append(dep_node)
+
+    return plan
+
+
+def _convert_one(
+    plan: _Plan,
+    channel_dir: Path,
+    force: bool,
+    compression_level: int,
+    index_lock: Lock,
+) -> Converted:
+    """Convert a single planned package (thread-pool worker).
+
+    The expensive build (scan/hash/zstd) runs unlocked; only the shared
+    repodata update is serialized behind ``index_lock``.
+    """
+    node, dep_nodes, prefix = plan.node, plan.dep_nodes, plan.prefix
+
+    if _node_is_external(node, prefix):
+        if node["name"] in conda.VIRTUAL_PACKAGES:
+            note = f"external, satisfied by {conda.VIRTUAL_PACKAGES[node['name']]} virtual package"
+        else:
+            note = "external to spack, not converted"
+        return Converted(node["name"], str(node["version"]), node["hash"], None, note)
+
+    meta = conda.meta_from_spec(node, dep_nodes)
+    dest = Path(channel_dir) / meta.subdir / f"{meta.filestem}.conda"
+    if dest.exists() and not force:
+        return Converted(meta.name, meta.version, node["hash"], dest,
+                         "already in channel, skipped")
+
+    log.debug("building %s", meta.filestem)
+    result = conda.build_conda_package(
+        prefix, meta, dest.parent, compression_level=compression_level)
+    staged, record = channel_mod.stage_package(
+        Path(channel_dir), result.path, meta.index_json())
+    with index_lock:
+        channel_mod.index_record(Path(channel_dir), staged, record)
+    return Converted(meta.name, meta.version, node["hash"], staged,
+                     prefix_limit=result.prefix_limit)
+
+
+def convert_spec(
+    spack: Spack,
+    spec: str,
+    channel_dir: Path,
+    with_deps: bool = True,
+    force: bool = False,
+    jobs: int = 1,
+    compression_level: int = conda.DEFAULT_COMPRESSION_LEVEL,
+) -> list[Converted]:
+    """Convert the single installed package matching ``spec``.
+
+    With ``with_deps`` (default) the transitive runtime (link/run)
+    dependencies are converted as well so the channel is
+    self-contained.  Existing packages in the channel are skipped
+    unless ``force``.  ``jobs`` packages are built in parallel (0 means
+    one per CPU); ``compression_level`` is the zstd level for payloads.
+    Returns one Converted record per visited spec, in discovery order.
+    """
+    root = spack.resolve_one(spec)
+    plan = _discover(spack, root, with_deps)
+
+    workers = _resolve_jobs(jobs)
+    total = len(plan)
+    log.debug("converting %d package(s) with %d job(s), zstd level %d",
+              total, workers, compression_level)
+
+    index_lock = Lock()
+    results: list[Converted] = [None] * total  # type: ignore[list-item]
+
+    def build(i: int) -> None:
+        results[i] = _convert_one(
+            plan[i], channel_dir, force, compression_level, index_lock)
+
+    if workers == 1:
+        for i in range(total):
+            build(i)
+            log.debug("converted %d/%d %s", i + 1, total, results[i].name)
+    else:
+        done = 0
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(build, i): i for i in range(total)}
+            for future in as_completed(futures):
+                future.result()  # re-raise any worker exception
+                done += 1
+                name = results[futures[future]].name
+                log.debug("converted %d/%d %s", done, total, name)
 
     return results

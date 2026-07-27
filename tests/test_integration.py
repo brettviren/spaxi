@@ -58,6 +58,21 @@ def test_convert_zstd(spack_sandbox, tmp_path):
     assert all("skipped" in r.note for r in again if r.path)
 
 
+def test_convert_zstd_parallel_matches_serial(spack_sandbox, tmp_path):
+    spack = Spack(spack_sandbox)
+    serial = convert.convert_spec(spack, "zstd ~programs", tmp_path / "serial")
+    parallel = convert.convert_spec(
+        spack, "zstd ~programs", tmp_path / "parallel", jobs=0)
+    # Same package set regardless of worker count, and discovery order is
+    # preserved so results line up one-to-one.
+    assert [r.hash for r in serial] == [r.hash for r in parallel]
+    # Both channels are self-contained and valid.
+    for base in ("serial", "parallel"):
+        repodata = json.loads(
+            (tmp_path / base / "linux-64" / "repodata.json").read_text())
+        assert any(k.startswith("zstd-") for k in repodata["packages.conda"])
+
+
 def test_project_lifecycle(spack_sandbox, tmp_path, monkeypatch):
     proj = Project(tmp_path / "demo")
     proj.init(name="demo")

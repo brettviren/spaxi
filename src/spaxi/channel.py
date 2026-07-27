@@ -52,18 +52,17 @@ def ensure_channel(channel: Path) -> None:
         _write_repodata(noarch, _empty_repodata("noarch"))
 
 
-def add_package(channel: Path, package: Path, index: dict) -> Path:
-    """Add a built .conda package to the channel and index it.
+def stage_package(channel: Path, package: Path, index: dict) -> tuple[Path, dict]:
+    """Move a built package into its subdir and compute its repodata record.
 
-    ``index`` is the package's info/index.json content.  The package
-    file is moved into ``<channel>/<subdir>/`` if not already there.
-    Returns the final package path.
+    Does no shared repodata mutation, so it is safe to call concurrently
+    for distinct packages.  Returns ``(dest, record)`` for a subsequent
+    :func:`index_record` (which must be serialized).
     """
     channel = Path(channel)
     subdir = index["subdir"]
     subdir_path = channel / subdir
     subdir_path.mkdir(parents=True, exist_ok=True)
-    ensure_channel(channel)
 
     dest = subdir_path / package.name
     if package.resolve() != dest.resolve():
@@ -87,7 +86,29 @@ def add_package(channel: Path, package: Path, index: dict) -> Path:
     # to filter on them.
     if index.get("flags"):
         record["flags"] = index["flags"]
-    repodata = _load_repodata(subdir_path, subdir)
+    return dest, record
+
+
+def index_record(channel: Path, dest: Path, record: dict) -> None:
+    """Insert a staged package's ``record`` into its subdir repodata.
+
+    Performs a read-modify-write of ``repodata.json``, so callers that run
+    :func:`stage_package` concurrently must serialize this step.
+    """
+    ensure_channel(Path(channel))
+    subdir_path = dest.parent
+    repodata = _load_repodata(subdir_path, subdir_path.name)
     repodata["packages.conda"][dest.name] = record
     _write_repodata(subdir_path, repodata)
+
+
+def add_package(channel: Path, package: Path, index: dict) -> Path:
+    """Add a built .conda package to the channel and index it.
+
+    ``index`` is the package's info/index.json content.  The package
+    file is moved into ``<channel>/<subdir>/`` if not already there.
+    Returns the final package path.
+    """
+    dest, record = stage_package(channel, package, index)
+    index_record(channel, dest, record)
     return dest

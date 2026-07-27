@@ -9,10 +9,11 @@ from pathlib import Path
 
 import click
 
-from . import addspec, convert
+from . import addspec, conda, convert
 from .conda import CondaBuildError
 from .config import Config
 from .flags import FlagCollisionError
+from .log import LogError, setup_logging
 from .project import Project, ProjectError, find_project
 from .spack import AmbiguousSpecError, Spack, SpackError, locate_spack
 
@@ -47,9 +48,17 @@ class Main:
               help="Path to the spack executable.")
 @click.option("--channel", type=click.Path(path_type=Path), default=None,
               help="Local conda channel directory (for 'spaxi conda').")
+@click.option("-l", "--log-sink", default="stderr", show_default=True,
+              help="Where to send log records: stderr, stdout, or a file path.")
+@click.option("-L", "--log-level", default="info", show_default=True,
+              help="Minimum log level: debug, info, warning, error.")
 @click.pass_context
-def cli(ctx, config_file, spack_exe, channel):
+def cli(ctx, config_file, spack_exe, channel, log_sink, log_level):
     """spaxi: a pixi-like end-user experience for Spack packages."""
+    try:
+        setup_logging(log_sink, log_level)
+    except LogError as err:
+        _fail(str(err))
     ctx.obj = Main(config_file, spack_exe, channel)
 
 
@@ -73,8 +82,13 @@ def _help_if_bare(ctx, args) -> None:
 @click.option("--deps/--no-deps", default=True, show_default=True,
               help="Also convert transitive runtime dependencies.")
 @click.option("--force", is_flag=True, help="Rebuild packages already in the channel.")
+@click.option("-j", "--jobs", type=int, default=1, show_default=True,
+              help="Convert this many packages in parallel (0 = one per CPU).")
+@click.option("-z", "--compression-level", type=int,
+              default=conda.DEFAULT_COMPRESSION_LEVEL, show_default=True,
+              help="zstd compression level for package payloads (1-22).")
 @click.pass_context
-def conda_cmd(ctx, spec, deps, force):
+def conda_cmd(ctx, spec, deps, force, jobs, compression_level):
     """Convert an installed Spack package to a conda package.
 
     SPEC must resolve to exactly one installed Spack package (qualify
@@ -83,11 +97,14 @@ def conda_cmd(ctx, spec, deps, force):
     with updated repodata.json, ready for direct use with pixi.
     """
     _help_if_bare(ctx, spec)
+    if not 1 <= compression_level <= conda.MAX_COMPRESSION_LEVEL:
+        _fail(f"compression level must be between 1 and {conda.MAX_COMPRESSION_LEVEL}")
     main = ctx.obj
     try:
         results = convert.convert_spec(
             main.spack(), " ".join(spec), main.channel,
-            with_deps=deps, force=force)
+            with_deps=deps, force=force, jobs=jobs,
+            compression_level=compression_level)
     except AmbiguousSpecError as err:
         # Show the competing builds and their variants so the user can pick.
         click.secho(f"spaxi: {err}", fg="red", err=True)
@@ -102,6 +119,17 @@ def conda_cmd(ctx, spec, deps, force):
         where = res.path if res.path else ""
         note = f" ({res.note})" if res.note else ""
         click.echo(f"{res.name}@{res.version}/{res.hash[:7]} {where}{note}")
+    # Binary prefix relocation can only shrink the embedded Spack prefix, so
+    # the channel's usable install prefix is capped by its tightest package.
+    limits = [(r.prefix_limit, r.name) for r in results
+              if r.prefix_limit is not None]
+    if limits:
+        limit, tightest = min(limits)
+        click.echo(
+            f"note: some packages embed the Spack prefix in binaries; install "
+            f"this channel only into an environment whose prefix is at most "
+            f"{limit} characters (tightest: {tightest})."
+        )
 
 
 @cli.command("add-spec")

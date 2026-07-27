@@ -7,10 +7,13 @@ subcommands).
 """
 
 import json
+import logging
 import os
 import shutil
 import subprocess
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 class SpackError(Exception):
@@ -76,6 +79,7 @@ class Spack:
     def run(self, *args: str, capture: bool = True) -> str:
         """Run a spack command and return its stdout."""
         cmd = self.command(*args)
+        log.debug("running: %s", " ".join(cmd))
         proc = subprocess.run(
             cmd,
             capture_output=capture,
