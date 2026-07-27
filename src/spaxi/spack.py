@@ -17,6 +17,25 @@ class SpackError(Exception):
     """A spack invocation or resolution failed."""
 
 
+class AmbiguousSpecError(SpackError):
+    """A spec matched more than one installed package.
+
+    Carries the original ``spec`` and the matching nodes so callers can show
+    richer disambiguation help (e.g. ``spack find -lv <spec>``).
+    """
+
+    def __init__(self, spec: str, matches: list[dict]):
+        self.spec = spec
+        self.matches = matches
+        names = ", ".join(
+            f"{m['name']}@{m['version']}/{m['hash'][:7]}" for m in matches
+        )
+        super().__init__(
+            f"spec '{spec}' is ambiguous, matches: {names}; "
+            "qualify it, e.g. with /<hash>"
+        )
+
+
 def locate_spack(explicit: str | None = None) -> Path:
     """Find the spack executable.
 
@@ -97,14 +116,15 @@ class Spack:
         if not matches:
             raise SpackError(f"spec '{spec}' matches no installed packages")
         if len(matches) > 1:
-            names = ", ".join(
-                f"{m['name']}@{m['version']}/{m['hash'][:7]}" for m in matches
-            )
-            raise SpackError(
-                f"spec '{spec}' is ambiguous, matches: {names}; "
-                "qualify it, e.g. with /<hash>"
-            )
+            raise AmbiguousSpecError(spec, matches)
         return matches[0]
+
+    def find_verbose(self, spec: str) -> str:
+        """Return ``spack find -lv <spec>`` output (hashes + variants).
+
+        Used to show the competing builds when a spec is ambiguous.
+        """
+        return self.run("find", "-lv", spec)
 
     def concretize_one(self, spec: str) -> dict:
         """Concretize ``spec`` (without installing) and return its root node.

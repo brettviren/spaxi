@@ -14,7 +14,7 @@ from .conda import CondaBuildError
 from .config import Config
 from .flags import FlagCollisionError
 from .project import Project, ProjectError, find_project
-from .spack import Spack, SpackError, locate_spack
+from .spack import AmbiguousSpecError, Spack, SpackError, locate_spack
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 
@@ -88,6 +88,14 @@ def conda_cmd(ctx, spec, deps, force):
         results = convert.convert_spec(
             main.spack(), " ".join(spec), main.channel,
             with_deps=deps, force=force)
+    except AmbiguousSpecError as err:
+        # Show the competing builds and their variants so the user can pick.
+        click.secho(f"spaxi: {err}", fg="red", err=True)
+        try:
+            click.echo(main.spack().find_verbose(err.spec).rstrip(), err=True)
+        except SpackError:
+            pass
+        sys.exit(1)
     except (SpackError, CondaBuildError, FlagCollisionError) as err:
         _fail(str(err))
     for res in results:

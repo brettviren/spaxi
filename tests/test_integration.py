@@ -156,3 +156,42 @@ def test_variant_flag_selection(spack_sandbox, pixi_env, tmp_path):
     for build, setflag in set_of.items():
         picked, _ = pixi_pick([setflag])
         assert picked == build
+
+
+def test_resolve_one_ambiguous(spack_sandbox):
+    from spaxi.spack import AmbiguousSpecError
+    spack = Spack(spack_sandbox)
+    builds = spack.find("zstd")
+    if len(builds) < 2:
+        pytest.skip("needs >=2 installed zstd variants")
+    with pytest.raises(AmbiguousSpecError) as excinfo:
+        spack.resolve_one("zstd")
+    assert excinfo.value.spec == "zstd"
+    assert len(excinfo.value.matches) == len(builds)
+
+
+def test_find_verbose_shows_variants(spack_sandbox):
+    spack = Spack(spack_sandbox)
+    out = spack.find_verbose("zstd")
+    assert "zstd@" in out
+    assert "programs" in out          # -v exposes variants
+
+
+def test_conda_command_ambiguous_shows_variant_table(spack_sandbox, tmp_path):
+    from click.testing import CliRunner
+    from spaxi.cli import cli
+    spack = Spack(spack_sandbox)
+    if len(spack.find("zstd")) < 2:
+        pytest.skip("needs >=2 installed zstd variants")
+    result = CliRunner().invoke(
+        cli, ["--spack-exe", str(spack_sandbox),
+              "--channel", str(tmp_path / "ch"), "conda", "zstd"])
+    assert result.exit_code == 1
+    combined = result.output or ""
+    try:
+        combined += result.stderr or ""
+    except (ValueError, AttributeError):
+        pass
+    assert "is ambiguous" in combined
+    # the `spack find -lv` table is shown, with hashes and variant detail
+    assert "+programs" in combined and "compression" in combined
