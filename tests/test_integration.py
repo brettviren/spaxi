@@ -4,13 +4,17 @@ These exercise the real spack executable and its installed zstd.
 They are skipped when ./spack is not present.
 """
 
+import io
 import json
 import shutil
 import subprocess
+import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 
 import pytest
+import zstandard
 
 from spaxi import convert
 from spaxi.project import Project
@@ -19,6 +23,23 @@ from spaxi.spack import Spack
 from conftest import needs_pixi, needs_spack
 
 pytestmark = needs_spack
+
+needs_readelf = pytest.mark.skipif(
+    shutil.which("readelf") is None, reason="readelf not available"
+)
+
+
+def _extract_payload_member(conda_path, predicate):
+    """Return (name, bytes) of the first payload file matching predicate."""
+    stem = conda_path.name[: -len(".conda")]
+    with zipfile.ZipFile(conda_path) as zf:
+        raw = zf.read(f"pkg-{stem}.tar.zst")
+    data = zstandard.ZstdDecompressor().decompress(raw, max_output_size=1 << 30)
+    with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+        for member in tf.getmembers():
+            if member.isfile() and predicate(member.name):
+                return member.name, tf.extractfile(member).read()
+    raise AssertionError("no matching payload member found")
 
 
 def test_resolve_one(spack_sandbox):
@@ -71,6 +92,43 @@ def test_convert_zstd_parallel_matches_serial(spack_sandbox, tmp_path):
         repodata = json.loads(
             (tmp_path / base / "linux-64" / "repodata.json").read_text())
         assert any(k.startswith("zstd-") for k in repodata["packages.conda"])
+
+
+@needs_readelf
+def test_convert_rewrites_rpaths_to_origin(spack_sandbox, tmp_path):
+    spack = Spack(spack_sandbox)
+    chan = tmp_path / "channel"
+    results = convert.convert_spec(spack, "zstd ~programs", chan)
+    zstd = next(r for r in results if r.name == "zstd")
+
+    name, data = _extract_payload_member(
+        zstd.path, lambda n: "libzstd.so" in n and not n.endswith(".so"))
+    lib = tmp_path / "libzstd.extracted.so"
+    lib.write_bytes(data)
+
+    out = subprocess.run(["readelf", "-d", str(lib)],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, "rewritten binary is not a valid ELF"
+    rpath_lines = [ln for ln in out.stdout.splitlines()
+                   if "RPATH" in ln or "RUNPATH" in ln]
+    assert rpath_lines, f"no RPATH in {name}"
+    rpaths = " ".join(rpath_lines)
+    # Rewritten to $ORIGIN-relative, with no absolute Spack store path left.
+    assert "$ORIGIN" in rpaths
+    assert "spack/opt/spack" not in rpaths
+
+
+def test_no_origin_rpaths_keeps_absolute(spack_sandbox, tmp_path):
+    # With rewriting disabled the original absolute Spack RPATH survives, so
+    # the embedded prefix still imposes a relocation limit.
+    spack = Spack(spack_sandbox)
+    results = convert.convert_spec(
+        spack, "zstd ~programs", tmp_path / "channel", relocate_rpaths=False)
+    zstd = next(r for r in results if r.name == "zstd")
+    _, data = _extract_payload_member(
+        zstd.path, lambda n: "libzstd.so" in n and not n.endswith(".so"))
+    assert b"$ORIGIN" not in data
+    assert zstd.prefix_limit is not None
 
 
 def test_project_lifecycle(spack_sandbox, tmp_path, monkeypatch):

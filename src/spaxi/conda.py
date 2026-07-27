@@ -27,6 +27,7 @@ from pathlib import Path
 
 import zstandard
 
+from . import relocate
 from .flags import variant_flags
 
 log = logging.getLogger(__name__)
@@ -116,6 +117,9 @@ class PathEntry:
     size_in_bytes: int
     file_mode: str | None = None  # text | binary, when prefix embedded
     prefix_placeholder: str | None = None
+    # When RPATH relocation rewrote the file, the payload is taken from this
+    # staged copy instead of the original install prefix.  Not serialized.
+    source: Path | None = None
 
     def to_json(self) -> dict:
         d = {
@@ -131,12 +135,18 @@ class PathEntry:
         return d
 
 
-def scan_prefix(prefix: Path) -> list[PathEntry]:
+def scan_prefix(prefix: Path, relocate_prefixes: list[str] | None = None,
+                stage_dir: Path | None = None) -> list[PathEntry]:
     """Walk a Spack install prefix and classify its payload files.
 
     The Spack-internal ``.spack`` directory is excluded.  Files that
     contain the install prefix string are marked for text or binary
     prefix replacement.
+
+    When ``relocate_prefixes`` and ``stage_dir`` are given, ELF files have
+    their RPATHs rewritten to ``$ORIGIN``-relative form (see
+    :mod:`spaxi.relocate`); the modified bytes are staged under
+    ``stage_dir`` and drive the recorded digest, size and prefix marking.
     """
     prefix = Path(prefix).resolve()
     prefix_bytes = str(prefix).encode()
@@ -152,9 +162,21 @@ def scan_prefix(prefix: Path) -> list[PathEntry]:
             entries.append(PathEntry(str(rel), "softlink", sha, size))
         elif path.is_file():
             data = path.read_bytes()
+            source = None
+            if relocate_prefixes and stage_dir is not None:
+                rewritten = relocate.rewrite_elf_rpaths(
+                    data, str(rel), relocate_prefixes)
+                if rewritten is not None:
+                    data = rewritten
+                    source = stage_dir / rel
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    source.write_bytes(data)
+                    # keep the executable bit (and any other mode) from spack
+                    source.chmod(path.stat().st_mode)
+                    log.debug("rewrote RPATHs in %s", rel)
             entry = PathEntry(
                 str(rel), "hardlink",
-                hashlib.sha256(data).hexdigest(), len(data),
+                hashlib.sha256(data).hexdigest(), len(data), source=source,
             )
             if prefix_bytes in data:
                 entry.file_mode = "binary" if _is_binary(data) else "text"
@@ -288,11 +310,14 @@ def build_conda_package(
     outdir: Path,
     about: dict | None = None,
     compression_level: int = DEFAULT_COMPRESSION_LEVEL,
+    relocate_prefixes: list[str] | None = None,
 ) -> BuildResult:
     """Convert a Spack install prefix into a .conda package file.
 
     Returns a :class:`BuildResult` with the package path (under
-    ``outdir``) and any binary-relocation prefix-length constraint.
+    ``outdir``) and any binary-relocation prefix-length constraint.  When
+    ``relocate_prefixes`` (the Spack prefixes of the converted closure) is
+    given, ELF RPATHs referencing them are rewritten ``$ORIGIN``-relative.
     """
     prefix = Path(prefix)
     if not prefix.is_dir():
@@ -300,41 +325,42 @@ def build_conda_package(
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # An empty payload is legitimate: Spack "bundle" packages (e.g. glx)
-    # install only a .spack metadir and delegate real files to their
-    # dependencies.  They still concretize as runtime-dependency nodes, so
-    # they must exist in the channel; build them as empty metapackages.
-    log.debug("scanning install prefix %s", prefix)
-    entries = scan_prefix(prefix)
-    total_bytes = sum(e.size_in_bytes for e in entries)
-    log.debug("scanned %d files, %s in %s",
-              len(entries), _human_bytes(total_bytes), meta.filestem)
-
-    # Only binary files that embed the prefix constrain the install prefix
-    # length; text replacement may grow freely.  All such files share the
-    # one install prefix, so the cap is simply the placeholder length.
-    binary_placeholders = [
-        len(e.prefix_placeholder) for e in entries
-        if e.file_mode == "binary" and e.prefix_placeholder
-    ]
-    prefix_limit = min(binary_placeholders) if binary_placeholders else None
-
-    paths_json = {
-        "paths": [e.to_json() for e in entries],
-        "paths_version": 1,
-    }
-    files_txt = "".join(e.path + "\n" for e in entries)
-    spec_json = prefix / SPACK_METADIR / "spec.json"
-
     outpath = outdir / f"{meta.filestem}.conda"
+    spec_json = prefix / SPACK_METADIR / "spec.json"
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
+        stage_dir = (tmp / "stage") if relocate_prefixes else None
+
+        # An empty payload is legitimate: Spack "bundle" packages (e.g. glx)
+        # install only a .spack metadir and delegate real files to their
+        # dependencies.  They still concretize as runtime-dependency nodes,
+        # so they must exist in the channel; build empty metapackages.
+        log.debug("scanning install prefix %s", prefix)
+        entries = scan_prefix(prefix, relocate_prefixes, stage_dir)
+        total_bytes = sum(e.size_in_bytes for e in entries)
+        log.debug("scanned %d files, %s in %s",
+                  len(entries), _human_bytes(total_bytes), meta.filestem)
+
+        # Only binary files that embed the prefix constrain the install
+        # prefix length; text replacement may grow freely.  All such files
+        # share the one prefix, so the cap is the placeholder length.
+        binary_placeholders = [
+            len(e.prefix_placeholder) for e in entries
+            if e.file_mode == "binary" and e.prefix_placeholder
+        ]
+        prefix_limit = min(binary_placeholders) if binary_placeholders else None
+
+        paths_json = {
+            "paths": [e.to_json() for e in entries],
+            "paths_version": 1,
+        }
+        files_txt = "".join(e.path + "\n" for e in entries)
 
         log.debug("archiving %d files (%s)", len(entries), _human_bytes(total_bytes))
         pkg_tar = tmp / "pkg.tar"
         with tarfile.open(pkg_tar, "w") as tar:
             for entry in entries:
-                _tar_add(tar, prefix / entry.path, entry.path)
+                _tar_add(tar, entry.source or (prefix / entry.path), entry.path)
 
         info_tar = tmp / "info.tar"
         with tarfile.open(info_tar, "w") as tar:

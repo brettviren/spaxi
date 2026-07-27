@@ -112,6 +112,7 @@ def _convert_one(
     channel_dir: Path,
     force: bool,
     compression_level: int,
+    relocate_prefixes: list[str] | None,
     index_lock: Lock,
 ) -> Converted:
     """Convert a single planned package (thread-pool worker).
@@ -136,7 +137,8 @@ def _convert_one(
 
     log.debug("building %s", meta.filestem)
     result = conda.build_conda_package(
-        prefix, meta, dest.parent, compression_level=compression_level)
+        prefix, meta, dest.parent, compression_level=compression_level,
+        relocate_prefixes=relocate_prefixes)
     staged, record = channel_mod.stage_package(
         Path(channel_dir), result.path, meta.index_json())
     with index_lock:
@@ -153,6 +155,7 @@ def convert_spec(
     force: bool = False,
     jobs: int = 1,
     compression_level: int = conda.DEFAULT_COMPRESSION_LEVEL,
+    relocate_rpaths: bool = True,
 ) -> list[Converted]:
     """Convert the single installed package matching ``spec``.
 
@@ -161,7 +164,10 @@ def convert_spec(
     self-contained.  Existing packages in the channel are skipped
     unless ``force``.  ``jobs`` packages are built in parallel (0 means
     one per CPU); ``compression_level`` is the zstd level for payloads.
-    Returns one Converted record per visited spec, in discovery order.
+    With ``relocate_rpaths`` (default) ELF RPATHs into any converted Spack
+    prefix are rewritten ``$ORIGIN``-relative, so the channel links without
+    the Spack store.  Returns one Converted record per visited spec, in
+    discovery order.
     """
     root = spack.resolve_one(spec)
     plan = _discover(spack, root, with_deps)
@@ -171,12 +177,24 @@ def convert_spec(
     log.debug("converting %d package(s) with %d job(s), zstd level %d",
               total, workers, compression_level)
 
+    # RPATHs may reference any package in the converted closure, so every
+    # build gets the full set of (non-external) Spack prefixes to remap.
+    relocate_prefixes = None
+    if relocate_rpaths:
+        prefixes: set[str] = set()
+        for p in plan:
+            if not _node_is_external(p.node, p.prefix):
+                prefixes.add(str(p.prefix))
+                prefixes.add(os.path.realpath(p.prefix))
+        relocate_prefixes = sorted(prefixes)
+
     index_lock = Lock()
     results: list[Converted] = [None] * total  # type: ignore[list-item]
 
     def build(i: int) -> None:
         results[i] = _convert_one(
-            plan[i], channel_dir, force, compression_level, index_lock)
+            plan[i], channel_dir, force, compression_level,
+            relocate_prefixes, index_lock)
 
     if workers == 1:
         for i in range(total):

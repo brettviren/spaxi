@@ -87,8 +87,11 @@ def _help_if_bare(ctx, args) -> None:
 @click.option("-z", "--compression-level", type=int,
               default=conda.DEFAULT_COMPRESSION_LEVEL, show_default=True,
               help="zstd compression level for package payloads (1-22).")
+@click.option("--origin-rpaths/--no-origin-rpaths", default=True, show_default=True,
+              help="Rewrite ELF RPATHs to $ORIGIN-relative so the channel "
+                   "links without the Spack store.")
 @click.pass_context
-def conda_cmd(ctx, spec, deps, force, jobs, compression_level):
+def conda_cmd(ctx, spec, deps, force, jobs, compression_level, origin_rpaths):
     """Convert an installed Spack package to a conda package.
 
     SPEC must resolve to exactly one installed Spack package (qualify
@@ -104,7 +107,7 @@ def conda_cmd(ctx, spec, deps, force, jobs, compression_level):
         results = convert.convert_spec(
             main.spack(), " ".join(spec), main.channel,
             with_deps=deps, force=force, jobs=jobs,
-            compression_level=compression_level)
+            compression_level=compression_level, relocate_rpaths=origin_rpaths)
     except AmbiguousSpecError as err:
         # Show the competing builds and their variants so the user can pick.
         click.secho(f"spaxi: {err}", fg="red", err=True)

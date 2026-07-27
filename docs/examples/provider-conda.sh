@@ -15,11 +15,14 @@ SPACK="${SPACK:-$PWD/spack/bin/spack}"
 # Isolate spack's config and cache under ./.cache/
 . "$(dirname "$0")/spack-env.sh"
 
-# Recommended: pad install prefixes so they are long.  Conda-style
-# relocation rewrites the build prefix to the end-user's environment
-# prefix *in place*, so the end-user prefix must be no longer than
-# the placeholder recorded at packaging time (the spack prefix).
-# This must be set BEFORE installing the packages to be converted.
+# spaxi rewrites ELF RPATHs to $ORIGIN-relative at conversion time, so
+# shared-library lookup no longer depends on the Spack store or the
+# end-user prefix length.  Any *other* absolute prefix still embedded in a
+# binary (e.g. a compiled-in data path) is relocated by conda's in-place
+# byte replacement, which can only shrink -- so for those packages the
+# end-user prefix must be no longer than the spack prefix.  Padding the
+# install tree raises that ceiling; set it BEFORE installing.  (spaxi
+# reports the tightest such limit, if any, at the end of conversion.)
 "$SPACK" config add config:install_tree:padded_length:128
 
 # Build (or reuse) the package in the spack install area.
