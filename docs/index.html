@@ -203,6 +203,14 @@ runtime dependencies are converted along with it, so the channel is self-contain
   <li>The conda <em>build string</em> is the Spack DAG hash; runtime dependencies become
       exact <code>name version build</code> pins, so a channel can carry many builds of
       one version side by side.</li>
+  <li>Each package records its Spack <em>variants</em> as conda <em>flags</em>
+      (<a href="https://conda.org/learn/ceps/cep-0045/">CEP-45</a>):
+      <code>+v</code> → <code>v:true</code>, <code>~v</code> → <code>v:false</code>,
+      <code>key=value</code> → <code>key:value</code>. A multi-valued variant also gets an
+      atomic <code>key_set:…</code> flag (values de-duplicated, lexically sorted, joined
+      with <code>_</code>), and the DAG hash rides along as <code>hash:…</code>. End-users
+      pick a specific build by these flags — see
+      <a href="#s1-flags">Selecting a variant</a>.</li>
   <li><code>glibc</code> maps to conda's <code>__glibc</code> virtual package;
       other external (non-Spack-built) dependencies are skipped.</li>
   <li>Files embedding the Spack prefix are recorded in <code>info/paths.json</code>
@@ -237,8 +245,8 @@ runtime dependencies are converted along with it, so the channel is self-contain
   <li>Convert and index: <code>spaxi --channel ./channel conda "zstd +programs"</code>.</li>
   <li>Publish <code>channel/</code> via any static file server (or share the path).</li>
   <li>Note the build machine's glibc (<code>spack find --format '{version}' glibc</code>);
-      it becomes the packages' <code>__glibc >=</code> floor. End-users usually
-      need not act on it — see below.</li>
+      it becomes the packages' <code>__glibc >=</code> floor that end-users must
+      declare — see below.</li>
 </ol>
 
 <pre><code><span class="cmt"># the heart of provider-conda.sh</span>
@@ -253,23 +261,28 @@ spaxi --spack-exe "$SPACK" --channel "$CHANNEL" conda "$SPEC"</code></pre>
 <p>The end-user machine needs pixi only. Two things to know:</p>
 <ol>
   <li>Spack-built packages carry a <code>__glibc >=</code> constraint from the
-      provider's build machine. pixi models glibc as the <code>__glibc</code>
-      <em>virtual package</em> and <strong>auto-detects it from this host</strong>
-      (see <code>pixi info</code> → "Virtual packages"), so on a machine whose glibc
-      already satisfies that constraint <em>nothing extra is required</em> — the
-      <code>platforms = [{ platform = "linux-64" }]</code> that <code>pixi init</code>
-      writes is enough. Pin it (<code>glibc = "2.36"</code>) only when solving for a
-      <em>different</em> machine than the one running pixi. The old top-level
-      <code>[system-requirements]</code> table is deprecated.</li>
+      provider's build machine, and you <strong>must declare a glibc at least that
+      high</strong> on the <code>platforms</code> entry (as a <em>virtual package</em>,
+      e.g. <code>glibc = "2.36"</code>). pixi's solver uses this <em>declared</em>
+      value for reproducible cross-platform solving — not the host value that
+      <code>pixi info</code> detects — and its linux-64 default (glibc 2.17) is older
+      than any modern build host, so without a declaration the constraint has no
+      candidate and the solve fails. A safe choice is this host's own glibc
+      (<code>ldd --version</code>). The old top-level <code>[system-requirements]</code>
+      table is deprecated in favour of this inline form.</li>
   <li>Keep the project path reasonably short (see the prefix-length note above).</li>
 </ol>
 
 <pre><code><span class="cmt"># the heart of enduser-pixi.sh</span>
 pixi init --channel "$CHANNEL" .
 
-<span class="cmt"># glibc is auto-detected from the host, so no [system-requirements] and</span>
-<span class="cmt"># no glibc pin are needed here.  Pin only for a cross-machine solve:</span>
+<span class="cmt"># REQUIRED: declare glibc on the platform (default here: this host's).</span>
+<span class="cmt"># pixi init writes: platforms = ["linux-64"]; rewrite it to:</span>
 <span class="cmt">#   platforms = [{ platform = "linux-64", glibc = "2.36" }]</span>
+GLIBC=$(ldd --version | sed -n '1s/.* //p')
+sed -i -E \
+  's|^platforms = \["([^"]+)"\]|platforms = [{ platform = "\1", glibc = "'"$GLIBC"'" }]|' \
+  pixi.toml
 
 pixi add zstd
 
@@ -280,6 +293,50 @@ pixi run zstd --version    <span class="cmt"># -> *** zstd command line interfac
 <p>After <code>pixi add</code>, the environment at <code>.pixi/envs/default</code> contains
 the Spack-built libraries and executables with all prefixes — including RPATHs — rewritten
 to point into the pixi environment.</p>
+
+<h3 id="s1-flags">Selecting a variant with flags</h3>
+<p class="scriptref">Script: <a href="examples/author-pixi.sh"><code>author-pixi.sh</code></a> — <code>author-pixi.sh &lt;channel-url&gt; &lt;spec&gt; [--exact]</code></p>
+
+<p>A channel may hold several builds of one <code>name</code>+<code>version</code> that
+differ only by variant (e.g. <code>zstd ~programs</code> vs. <code>+programs</code>, or
+different <code>compression</code> sets). Because <code>spaxi conda</code> records those
+variants as conda <em>flags</em>, an end-user selects the one they want directly in
+<code>pixi.toml</code>:</p>
+
+<pre><code>[dependencies]
+<span class="cmt"># any build that has the zstd CLI</span>
+zstd = { version = "*", flags = ["programs:true"] }
+
+<span class="cmt"># membership — "supports zlib"; also matches a build that adds lz4/lzma</span>
+zstd = { version = "*", flags = ["compression:zlib"] }
+
+<span class="cmt"># exact set — zlib and nothing else; the atomic _set flag distinguishes a</span>
+<span class="cmt"># subset from a superset (values are lexically sorted, joined with "_")</span>
+zstd = { version = "*", flags = ["compression_set:zlib"] }</code></pre>
+
+<p>Writing these by hand means knowing the flags. <code>spaxi add-spec &lt;spec&gt;</code>
+generates them: it concretizes a Spack spec and creates or updates a <code>pixi.toml</code>
+dependency with the matching flags. <code>--exact</code> additionally records the
+<code>hash:</code> flag, pinning the exact build — and, because spaxi packages pin their
+runtime dependencies exactly, the whole transitive closure. <code>-c/--config</code>
+targets a file other than <code>./pixi.toml</code>. Unlike the rest of the end-user role,
+<code>add-spec</code> needs Spack; it is an authoring aid whose output is consumed with
+pixi alone.</p>
+
+<pre><code><span class="cmt"># the heart of author-pixi.sh -- needs spack</span>
+pixi init --channel "$CHANNEL" .
+<span class="cmt"># ...declare glibc on the platform, as above...</span>
+spaxi add-spec --exact "zstd +programs compression=zlib"   <span class="cmt"># writes [dependencies.zstd]</span>
+pixi install</code></pre>
+
+<div class="note">
+  <strong>Inclusive matching, no negation (yet).</strong>
+  CEP-45 flag matching requires every listed flag to be present, but cannot
+  <em>exclude</em> a flag. So a bare membership flag (<code>compression:zlib</code>) can
+  resolve to a superset build that also carries <code>compression:lz4</code>. Use the
+  atomic <code>compression_set:…</code> flag, or the <code>hash:</code> flag, when you
+  need an unambiguous pick.
+</div>
 
 
 <h2 id="s2">Strategy 2 — pixi-shaped workflow, purely Spack</h2>

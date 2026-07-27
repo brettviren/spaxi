@@ -37,10 +37,11 @@ cat <<EOF
 Channel ready: $CHANNEL
 Publish it with any static file server (or use it via file://).
 
-These packages require glibc >= $GLIBC.  pixi auto-detects the host
-glibc, so end-users on a machine with glibc >= $GLIBC need no special
-pixi.toml setting.  Only when solving/locking for a *different* machine
-(whose glibc pixi cannot detect) must they pin it on the platform:
+These packages require glibc >= $GLIBC.  End-users MUST declare a
+glibc at least this high on their pixi.toml platforms entry -- pixi's
+solver uses a declared __glibc (default 2.17 on linux-64), not the
+detected host value, so without this the __glibc constraint has no
+candidate and the solve fails:
 
     platforms = [{ platform = "linux-64", glibc = "$GLIBC" }]
 EOF

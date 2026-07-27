@@ -39,11 +39,12 @@ Details of the conversion:
 - The conda build string is the Spack DAG hash; runtime dependencies
   become exact ~name version build~ pins.
 - ~glibc~ maps to the ~__glibc~ virtual package rather than being
-  converted.  pixi auto-detects ~__glibc~ from the end-user's host, so
-  a project needs no glibc setting as long as that host's glibc
-  satisfies the packages' ~__glibc >=~ floor; pin it on the ~platforms~
-  entry (~glibc = "2.36"~) only when solving for a different machine.
-  External (non-Spack-built) packages are skipped.
+  converted.  End-users must declare a glibc at least as new as the
+  build host on their ~platforms~ entry (~glibc = "2.36"~): pixi solves
+  against a *declared* ~__glibc~ (linux-64 default 2.17), not the
+  detected host value, so an undeclared project fails to satisfy the
+  packages' ~__glibc >=~ floor.  External (non-Spack-built) packages
+  are skipped.
 - Files embedding the Spack install prefix are recorded in
   ~info/paths.json~ with a ~prefix_placeholder~ (text or binary mode)
   so the installer relocates them into the target environment, the

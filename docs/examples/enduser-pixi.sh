@@ -8,7 +8,7 @@ set -eu
 
 CHANNEL="${1:?usage: enduser-pixi.sh <channel-url> [package] [glibc-version]}"
 PACKAGE="${2:-zstd}"
-GLIBC="${3:-}"          # optional; only needed for cross-machine solves
+GLIBC="${3:-$(ldd --version | sed -n '1s/.* //p')}"   # host glibc by default
 PIXI="${PIXI:-pixi}"
 
 # NOTE: keep the project path short.  Conda relocation requires the
@@ -17,24 +17,31 @@ PIXI="${PIXI:-pixi}"
 
 "$PIXI" init --channel "$CHANNEL" .
 
-# Spack-built packages carry a `__glibc >=` constraint from the machine
-# they were built on.  pixi models glibc as the `__glibc` virtual
-# package and AUTO-DETECTS it from this host, so on a machine whose
-# glibc already satisfies that constraint no pixi.toml change is needed.
-# We only normalize the platforms entry to the table form here
-# (illustrated in trial/pixi.toml):
-sed -i -E 's|^platforms = \["([^"]+)"\]|platforms = [{ platform = "\1" }]|' pixi.toml
-
-# Pin glibc explicitly ONLY when solving/locking for a *different*
-# machine than this one (whose glibc pixi cannot detect), by passing a
-# glibc-version argument:
-if [ -n "$GLIBC" ]; then
-  sed -i -E \
-    "s|^platforms = \[\{ platform = \"([^\"]+)\" \}\]|platforms = [{ platform = \"\1\", glibc = \"$GLIBC\" }]|" \
-    pixi.toml
-fi
+# Declare glibc on the platforms entry.  This is REQUIRED: pixi's solver
+# uses a *declared* __glibc for reproducible cross-platform solving, and
+# its linux-64 default (glibc 2.17) is older than any modern Spack build
+# host, so the package's `__glibc >=` constraint would otherwise have no
+# candidate.  (pixi's auto-detected host value, shown by `pixi info`, is
+# NOT used by the solver.)  A safe value is this host's own glibc: if it
+# is >= the provider's build-host glibc the package both solves and runs;
+# if it is older, the binaries could not run here anyway.  Pass an
+# explicit glibc-version argument when locking for a different machine.
+sed -i -E \
+  "s|^platforms = \[\"([^\"]+)\"\]|platforms = [{ platform = \"\1\", glibc = \"$GLIBC\" }]|" \
+  pixi.toml
 
 "$PIXI" add "$PACKAGE"
+
+# A bare name takes whatever build the solver prefers.  When a channel holds
+# several variants of one name+version, select the one you want by its conda
+# flags (spaxi records Spack variants as flags).  Edit pixi.toml, e.g.:
+#
+#   [dependencies]
+#   zstd = { version = "*", flags = ["programs:true"] }              # has the CLI
+#   zstd = { version = "*", flags = ["compression_set:zlib"] }       # exactly zlib
+#
+# See author-pixi.sh / `spaxi add-spec` to generate these from a spack spec.
+
 "$PIXI" list
 
 # Demonstrate the Spack-built program itself runs from the pixi env
