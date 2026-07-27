@@ -2,13 +2,13 @@
   "hooks": {
     "SessionStart": [
       {
+        "matcher": "*",
         "hooks": [
           {
-            "command": "/home/bviren/dev/spaxi/.claude/hooks/bwrap-cwd-hint.sh",
-            "type": "command"
+            "type": "command",
+            "command": "/home/bviren/dev/spaxi/.claude/hooks/bwrap-cwd-hint.sh"
           }
-        ],
-        "matcher": "*"
+        ]
       }
     ]
   }

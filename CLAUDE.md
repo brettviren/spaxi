@@ -1,77 +1,32 @@
-# Project Instructions for AI Agents
 
-This file provides instructions and context for AI coding agents working on this project.
+Development uses Beads (`bd`) for task tracking. Before starting implementation, create a comprehensive task list with `bd create`. Mark tasks in-progress and completed as work proceeds. Use `bd list` to review state at the start of each session.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
-## Beads Issue Tracker
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+The main entry is a command line program based on Click:
 
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
+```
+spaxi [general-options] <command> [command-options-and-arguments]
 ```
 
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
-
-## Agent Context Profiles
-
-The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
-
-- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
-- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
-
-## Session Completion
-
-This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
-
-1. **File issues for remaining work** - Create beads for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync by active profile**:
-   ```bash
-   # Conservative/minimal/default: report status and proposed commands; wait for approval.
-   git status
-
-   # Team-maintainer opt-in only, unless current instructions forbid it:
-   git pull --rebase
-   git push
-   git status
-   ```
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
-
-**Critical rules:**
-- Explicit user or orchestrator instructions override this Beads block.
-- Do not commit or push without clear authority from the active profile or the current user request.
-- If a required sync or push is blocked, stop and report the exact command and error.
-<!-- END BEADS INTEGRATION -->
+CLI commands do something and then exit. With some exceptions, every command emits a help message if given neither options nor arguments. An explicit `-h/--help` is accepted by every command and exits ignoring other arguments.
 
 
-## Build & Test
+The implementation is well factored and layered. CLI and UI modules contain no data processing logic; that logic lives in separate Python modules. As new functionality is added or reused across commands, it is factored out — follow DRY, not copy-paste.
 
-_Add your build and test commands here_
 
-```bash
-# Example:
-# npm install
-# npm test
+Use `git` freely to commit work locally as logical units are completed. Never push to a remote without an explicit user request.
+
+
+Tests live in `tests/` and run with `uv run pytest`. Write tests for new functionality. Keep tests focused and independent; avoid mocking internals.
+
+
+spaxi uses `uv` for development.
+
+```
+uv sync              # update development area after changes to pyproject.toml
+uv run pytest        # run unit tests
+uv run spaxi  # run CLI
 ```
 
-## Architecture Overview
 
-_Add a brief overview of your project architecture_
-
-## Conventions & Patterns
-
-_Add your project-specific conventions here_
+spaxi follows freedesktop's XDG convention to locate configuration files, hold state, and use file cache. It accepts a `config.toml` on the command line or looks for one at `~/.config/spaxi/config.toml`. Configuration is layered in last-one-wins order: environment variables → config file → command line options.
