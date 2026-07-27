@@ -230,17 +230,21 @@ runtime dependencies are converted along with it, so the channel is self-contain
 <ol>
   <li>Isolate Spack configuration (source <code>spack-env.sh</code>).</li>
   <li>Pad install prefixes: <code>spack config add config:install_tree:padded_length:128</code>.</li>
-  <li>Build the software: <code>spack install zstd</code>.</li>
-  <li>Convert and index: <code>spaxi --channel ./channel conda zstd</code>.</li>
+  <li>Build the software <em>with the executables you want</em>:
+      <code>spack install "zstd +programs"</code>. Spack's zstd defaults to
+      <code>~programs</code> (library only), so the <code>zstd</code> CLI would be
+      absent from the channel unless you request <code>+programs</code>.</li>
+  <li>Convert and index: <code>spaxi --channel ./channel conda "zstd +programs"</code>.</li>
   <li>Publish <code>channel/</code> via any static file server (or share the path).</li>
-  <li>Tell end-users the glibc version of the build machine
-      (<code>spack find --format '{version}' glibc</code>).</li>
+  <li>Note the build machine's glibc (<code>spack find --format '{version}' glibc</code>);
+      it becomes the packages' <code>__glibc >=</code> floor. End-users usually
+      need not act on it — see below.</li>
 </ol>
 
 <pre><code><span class="cmt"># the heart of provider-conda.sh</span>
 . spack-env.sh
 "$SPACK" config add config:install_tree:padded_length:128
-"$SPACK" install "$SPEC"
+"$SPACK" install "$SPEC"        <span class="cmt"># SPEC defaults to: zstd +programs</span>
 spaxi --spack-exe "$SPACK" --channel "$CHANNEL" conda "$SPEC"</code></pre>
 
 <h3>End-user <span class="tag user">end-user</span></h3>
@@ -248,28 +252,34 @@ spaxi --spack-exe "$SPACK" --channel "$CHANNEL" conda "$SPEC"</code></pre>
 
 <p>The end-user machine needs pixi only. Two things to know:</p>
 <ol>
-  <li>pixi solves against <em>declared</em> system requirements (glibc 2.17 by default),
-      not the detected host glibc. Spack-built packages carry a
-      <code>__glibc >=</code> constraint from the provider's build machine, so the
-      project must declare at least that version.</li>
+  <li>Spack-built packages carry a <code>__glibc >=</code> constraint from the
+      provider's build machine. pixi models glibc as the <code>__glibc</code>
+      <em>virtual package</em> and <strong>auto-detects it from this host</strong>
+      (see <code>pixi info</code> → "Virtual packages"), so on a machine whose glibc
+      already satisfies that constraint <em>nothing extra is required</em> — the
+      <code>platforms = [{ platform = "linux-64" }]</code> that <code>pixi init</code>
+      writes is enough. Pin it (<code>glibc = "2.36"</code>) only when solving for a
+      <em>different</em> machine than the one running pixi. The old top-level
+      <code>[system-requirements]</code> table is deprecated.</li>
   <li>Keep the project path reasonably short (see the prefix-length note above).</li>
 </ol>
 
 <pre><code><span class="cmt"># the heart of enduser-pixi.sh</span>
 pixi init --channel "$CHANNEL" .
 
-cat &gt;&gt; pixi.toml &lt;&lt;EOF
-
-[system-requirements]
-libc = { family = "glibc", version = "$GLIBC" }
-EOF
+<span class="cmt"># glibc is auto-detected from the host, so no [system-requirements] and</span>
+<span class="cmt"># no glibc pin are needed here.  Pin only for a cross-machine solve:</span>
+<span class="cmt">#   platforms = [{ platform = "linux-64", glibc = "2.36" }]</span>
 
 pixi add zstd
-pixi run some-command      <span class="cmt"># or: pixi shell</span></code></pre>
+
+<span class="cmt"># the Spack-built program runs straight from the pixi env</span>
+pixi run which zstd        <span class="cmt"># -> .pixi/envs/default/bin/zstd</span>
+pixi run zstd --version    <span class="cmt"># -> *** zstd command line interface 64-bits v1.5.7 ...</span></code></pre>
 
 <p>After <code>pixi add</code>, the environment at <code>.pixi/envs/default</code> contains
-the Spack-built libraries with all prefixes — including RPATHs — rewritten to point into
-the pixi environment.</p>
+the Spack-built libraries and executables with all prefixes — including RPATHs — rewritten
+to point into the pixi environment.</p>
 
 
 <h2 id="s2">Strategy 2 — pixi-shaped workflow, purely Spack</h2>

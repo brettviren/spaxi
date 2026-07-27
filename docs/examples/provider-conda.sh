@@ -5,7 +5,10 @@
 # Usage: provider-conda.sh [spec] [channel-dir]
 set -eu
 
-SPEC="${1:-zstd}"
+# NOTE: build variants that install the executables you want end-users
+# to run.  Spack's zstd defaults to ~programs (library only), so the
+# `zstd` CLI would be absent from the channel; +programs installs it.
+SPEC="${1:-zstd +programs}"
 CHANNEL="${2:-$PWD/channel}"
 SPACK="${SPACK:-$PWD/spack/bin/spack}"
 
@@ -26,7 +29,7 @@ SPACK="${SPACK:-$PWD/spack/bin/spack}"
 # index them into the channel.
 spaxi --spack-exe "$SPACK" --channel "$CHANNEL" conda "$SPEC"
 
-# Tell end-users the glibc their pixi projects must declare.
+# The build-machine glibc becomes the packages' `__glibc >=` floor.
 GLIBC=$("$SPACK" find --format '{version}' glibc | head -1)
 
 cat <<EOF
@@ -34,8 +37,10 @@ cat <<EOF
 Channel ready: $CHANNEL
 Publish it with any static file server (or use it via file://).
 
-End-users need in their pixi.toml:
+These packages require glibc >= $GLIBC.  pixi auto-detects the host
+glibc, so end-users on a machine with glibc >= $GLIBC need no special
+pixi.toml setting.  Only when solving/locking for a *different* machine
+(whose glibc pixi cannot detect) must they pin it on the platform:
 
-    [system-requirements]
-    libc = { family = "glibc", version = "$GLIBC" }
+    platforms = [{ platform = "linux-64", glibc = "$GLIBC" }]
 EOF

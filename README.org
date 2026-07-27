@@ -18,14 +18,19 @@ directory together with updated ~repodata.json~ indices.  ~pixi~ (or
 conda/mamba/rattler) can then install from that channel directly:
 
 #+begin_example
-$ spaxi --channel ./channel conda zstd
+$ spaxi --channel ./channel conda "zstd +programs"
 zstd@1.5.7/wray76q channel/linux-64/zstd-1.5.7-wray76qs...conda
 gcc-runtime@11.3.0/54m5z4a channel/linux-64/gcc-runtime-11.3.0-54m5z4a...conda
 
 $ pixi init myproj && cd myproj
 $ pixi project channel add file:///path/to/channel
 $ pixi add zstd
+$ pixi run zstd --version   # the Spack-built CLI runs from the pixi env
 #+end_example
+
+Only the files Spack installed are converted, so build variants that
+install executables (e.g. ~zstd +programs~; Spack's ~zstd~ defaults to
+~~programs~, library-only) are needed if end-users are to run the CLI.
 
 Details of the conversion:
 
@@ -34,7 +39,11 @@ Details of the conversion:
 - The conda build string is the Spack DAG hash; runtime dependencies
   become exact ~name version build~ pins.
 - ~glibc~ maps to the ~__glibc~ virtual package rather than being
-  converted.  External (non-Spack-built) packages are skipped.
+  converted.  pixi auto-detects ~__glibc~ from the end-user's host, so
+  a project needs no glibc setting as long as that host's glibc
+  satisfies the packages' ~__glibc >=~ floor; pin it on the ~platforms~
+  entry (~glibc = "2.36"~) only when solving for a different machine.
+  External (non-Spack-built) packages are skipped.
 - Files embedding the Spack install prefix are recorded in
   ~info/paths.json~ with a ~prefix_placeholder~ (text or binary mode)
   so the installer relocates them into the target environment, the
