@@ -5,53 +5,60 @@ smooth end-user experience that [[https://pixi.sh][pixi]] provides for conda pac
 
 * Strategy 1: convert Spack installs to conda packages
 
-#+begin_example
-spaxi conda <spec>
-#+end_example
+** Provider workflow:
 
-Resolves ~<spec>~ against the installed Spack packages (as ~spack find~
-does).  The spec must resolve to exactly one installed package —
-qualify with ~/<hash>~ if it is ambiguous.  The package's install tree
-is converted into a package in the current conda format (a ~.conda~
-archive, ~conda_pkg_format_version~ 2) and placed in a local channel
-directory together with updated ~repodata.json~ indices.  ~pixi~ (or
-conda/mamba/rattler) can then install from that channel directly:
+This results in conda package format version 2 which make use of "flags".
 
-#+begin_example
-$ spaxi --channel ./channel conda "zstd +programs"
-zstd@1.5.7/wray76q channel/linux-64/zstd-1.5.7-wray76qs...conda
-gcc-runtime@11.3.0/54m5z4a channel/linux-64/gcc-runtime-11.3.0-54m5z4a...conda
+1. Use =spack= to install a "spec" (package and its dependency tree).
+2. Use =spaxi conda= to convert the installed spec to conda packages in a local "channel" directory.
+3. Optional, publish/sync channel directory to an online instance.
 
-$ pixi init myproj && cd myproj
-$ pixi project channel add file:///path/to/channel
-$ pixi add zstd
-$ pixi run zstd --version   # the Spack-built CLI runs from the pixi env
-#+end_example
+See [[file:examples/provider-conda.sh]] for example.
 
-Only the files Spack installed are converted, so build variants that
-install executables (e.g. ~zstd +programs~; Spack's ~zstd~ defaults to
-~~programs~, library-only) are needed if end-users are to run the CLI.
+** User workflow:
 
-Details of the conversion:
+1. Given the channel, use =pixi= as normal to initialize a project.
+2. Edit =pixi.toml= to set glibc version to what is in the channel (see below).
+3. Use =pixi add <pkg>= to add packages as normal (beware ambiguity)
+3. Optional, use =spaxi add-spec <spec>= which can add packages unambiguously.
 
-- Transitive runtime (link/run) dependencies are converted too, so
-  the channel is self-contained (~--no-deps~ disables this).
-- The conda build string is the Spack DAG hash; runtime dependencies
-  become exact ~name version build~ pins.
-- ~glibc~ maps to the ~__glibc~ virtual package rather than being
-  converted.  End-users must declare a glibc at least as new as the
-  build host on their ~platforms~ entry (~glibc = "2.36"~): pixi solves
-  against a *declared* ~__glibc~ (linux-64 default 2.17), not the
-  detected host value, so an undeclared project fails to satisfy the
-  packages' ~__glibc >=~ floor.  External (non-Spack-built) packages
-  are skipped.
-- Files embedding the Spack install prefix are recorded in
-  ~info/paths.json~ with a ~prefix_placeholder~ (text or binary mode)
-  so the installer relocates them into the target environment, the
-  same mechanism conda-build packages use.  Spack's long
-  hash-qualified prefixes make good placeholders.
-- The original ~spec.json~ is preserved as ~info/spack-spec.json~ for
-  provenance.
+See [[file:examples/enduser-pixi.sh]] for example.
+
+*** Details - libc
+
+By default, packages from Spack are built with a Spack-built =libc= while =pixi=
+wants to use the system =libc= by default.  When the two have different versions
+you must encode the Spack-built version for =pixi=:
+
+#+begin_src toml
+[workspace]
+platforms = [{ platform = "linux-64" , glibc = "2.36" }]
+# ...
+#+end_src
+
+*** Details - ambiguities 
+
+In addition to a name and a version, a concrete Spack "spec" (an installed
+package) has a set of "variants" which are either binary true/false or
+name/label parameters.  Spaxi maps Spack variants to Conda "flags".  Flags may
+be new to many pixi users.  A =pixi.toml= may specify matches on flags and their
+values similarly to how matches on the "build" string have been traditionally
+made.
+
+A Spack packages may have multiple installed instances for the same name and
+version and this translates to the channel that spaxi populates.  If the
+end-user of =pixi= does not specify sufficient number of flags to match it is
+possible their pixi environment selects among the ambiguous package set in a
+"random" way.
+
+Unlike Spack, Conda packages and =pixi.toml= have no way to specify unambiguously
+specify a dependency between multiple packages that have the same name, version
+and variant set but differ in terms of their sets of dependencies.  Spaxi
+provides a way to encode a specific "spec" by giving a flag named =hash= that
+matches against the Spack hash.  The =spaxi add-spec --exact <spec>= will update
+=pixi.toml= to include the hash corresponding to the =<spec>= (if the spec is
+unique).
+
 
 * Strategy 2: pixi-like workflow, purely Spack
 
@@ -101,14 +108,5 @@ then ~spack~ on ~$PATH~.
 
 * Documentation
 
-See [[file:docs/index.html][docs/index.html]] for a full walkthrough of both
-strategies from the provider and end-user perspectives, with runnable
-scripts in [[file:docs/examples/][docs/examples/]].
+See https://brettviren.github.io/spaxi/ for a usage walk through.
 
-* Development
-
-#+begin_example
-uv sync              # update development area
-uv run pytest        # run tests (integration tests use ./spack)
-uv run spaxi         # run the CLI
-#+end_example
