@@ -18,6 +18,15 @@ is overwritten and the remainder zeroed, leaving all ELF section and
 segment layout untouched.  Anything unexpected (unparseable header, a
 component that would grow) leaves the file unchanged; callers then fall
 back to the original absolute paths rather than a corrupt binary.
+
+``$ORIGIN`` only helps the dynamic loader.  Absolute Spack paths also hide
+in read-only data as compiled-in program/data paths (e.g. GNU tar's
+``libexec/rmt`` and its hard-coded compressor helpers) and in text files
+(pkg-config ``.pc``, libtool ``.la``, shebangs).  :func:`unify_prefix_refs`
+handles those: it folds every reference to a *converted-closure* prefix onto
+one common placeholder, since conda merges every package into one prefix so
+``<pkgprefix>/<sub>`` always lands at ``<env>/<sub>``.  Recording that one
+placeholder lets conda's install-time replacement remap them all at once.
 """
 
 import posixpath
@@ -183,3 +192,70 @@ def _rewrite(buf: bytearray, file_relpath: str,
         changed = True
 
     return bytes(buf) if changed else None
+
+
+def unify_prefix_refs(data: bytes, prefixes: list[str]) -> tuple[bytes, str | None]:
+    """Fold every embedded closure-prefix reference onto one placeholder.
+
+    Any absolute path into a converted-closure Spack ``prefix`` is rewritten
+    so all of them share a single placeholder string -- the *shortest*
+    referenced prefix.  Conda then remaps that one placeholder to the install
+    prefix, turning ``<placeholder>/<sub>`` into ``<env>/<sub>``, which is
+    exactly where each package's ``<sub>`` lands in the merged environment.
+
+    Returns ``(data_out, placeholder)``.  ``placeholder`` is the common
+    prefix string, or None when no prefix is referenced.  ``data_out`` is a
+    new ``bytes`` when a rewrite happened and the original ``data`` otherwise.
+
+    For binary data (any NUL byte present) the rewrite is length-preserving:
+    each reference is shrunk within its enclosing NUL-delimited segment and
+    the freed tail zeroed, so no file offset moves.  Text data is rewritten
+    freely.  Because the placeholder is the shortest prefix, every other
+    reference is at least as long and thus always fits.
+    """
+    referenced = sorted({p for p in prefixes if p.encode() in data}, key=len)
+    if not referenced:
+        return data, None
+    placeholder = referenced[0]
+    targets = referenced[1:]  # longer prefixes to fold onto the placeholder
+    if not targets:
+        return data, placeholder  # only the placeholder prefix is present
+
+    common = placeholder.encode()
+    # Replace longer strings first so a shorter prefix can never chew into a
+    # longer one that contains it as a leading substring.
+    target_bytes = sorted((p.encode() for p in targets), key=len, reverse=True)
+
+    if b"\0" in data:
+        buf = bytearray(data)
+        _binary_unify(buf, target_bytes, common)
+        return bytes(buf), placeholder
+
+    out = data
+    for tb in target_bytes:
+        out = out.replace(tb, common)
+    return out, placeholder
+
+
+def _binary_unify(buf: bytearray, targets: list[bytes], common: bytes) -> None:
+    """Replace each target prefix with ``common`` inside a binary buffer.
+
+    Works one NUL-delimited segment at a time so byte offsets outside the
+    segment never move: the segment is rewritten (all targets -> common) and
+    its freed tail zeroed, keeping the segment's total length.
+    """
+    for target in targets:
+        pos = 0
+        while (i := buf.find(target, pos)) >= 0:
+            seg_end = buf.find(b"\0", i)
+            if seg_end < 0:
+                seg_end = len(buf)
+            seg_start = buf.rfind(b"\0", 0, i) + 1  # byte after the prior NUL
+            segment = bytes(buf[seg_start:seg_end])
+            new_seg = segment
+            for other in targets:
+                new_seg = new_seg.replace(other, common)
+            buf[seg_start:seg_start + len(new_seg)] = new_seg
+            for j in range(seg_start + len(new_seg), seg_end):
+                buf[j] = 0
+            pos = seg_end  # this segment no longer holds any target

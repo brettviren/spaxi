@@ -18,6 +18,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 import tarfile
 import tempfile
 import time
@@ -144,12 +145,24 @@ def scan_prefix(prefix: Path, relocate_prefixes: list[str] | None = None,
     prefix replacement.
 
     When ``relocate_prefixes`` and ``stage_dir`` are given, ELF files have
-    their RPATHs rewritten to ``$ORIGIN``-relative form (see
-    :mod:`spaxi.relocate`); the modified bytes are staged under
-    ``stage_dir`` and drive the recorded digest, size and prefix marking.
+    their RPATHs rewritten to ``$ORIGIN``-relative form and every reference
+    to a converted-closure prefix is folded onto a single placeholder (see
+    :mod:`spaxi.relocate`).  Modified bytes are staged under ``stage_dir``
+    and drive the recorded digest, size and prefix marking; the placeholder
+    that conda replaces on install is the one chosen by the fold.  Without
+    those arguments only the package's own prefix is marked, unchanged.
     """
     prefix = Path(prefix).resolve()
-    prefix_bytes = str(prefix).encode()
+    own_bytes = str(prefix).encode()
+    relocating = bool(relocate_prefixes) and stage_dir is not None
+    # A single cheap gate: any closure prefix contains the common root, so a
+    # file lacking the root needs no relocation scan at all.
+    root_bytes = b""
+    if relocating:
+        try:
+            root_bytes = os.path.commonpath(relocate_prefixes).encode()
+        except ValueError:
+            root_bytes = b""
     entries: list[PathEntry] = []
     for path in sorted(prefix.rglob("*")):
         rel = path.relative_to(prefix)
@@ -163,24 +176,37 @@ def scan_prefix(prefix: Path, relocate_prefixes: list[str] | None = None,
         elif path.is_file():
             data = path.read_bytes()
             source = None
-            if relocate_prefixes and stage_dir is not None:
+            placeholder = None
+            if relocating and root_bytes and root_bytes in data:
+                changed = False
                 rewritten = relocate.rewrite_elf_rpaths(
                     data, str(rel), relocate_prefixes)
                 if rewritten is not None:
                     data = rewritten
+                    changed = True
+                folded, placeholder = relocate.unify_prefix_refs(
+                    data, relocate_prefixes)
+                if folded is not data:
+                    data = folded
+                    changed = True
+                # Stage only when bytes actually changed.  A placeholder with
+                # no byte change means the file already contains it verbatim,
+                # so it can be tarred straight from the install prefix.
+                if changed:
                     source = stage_dir / rel
                     source.parent.mkdir(parents=True, exist_ok=True)
                     source.write_bytes(data)
-                    # keep the executable bit (and any other mode) from spack
                     source.chmod(path.stat().st_mode)
-                    log.debug("rewrote RPATHs in %s", rel)
+                    log.debug("relocated %s", rel)
+            elif not relocating and own_bytes in data:
+                placeholder = str(prefix)
             entry = PathEntry(
                 str(rel), "hardlink",
                 hashlib.sha256(data).hexdigest(), len(data), source=source,
             )
-            if prefix_bytes in data:
+            if placeholder is not None:
                 entry.file_mode = "binary" if _is_binary(data) else "text"
-                entry.prefix_placeholder = str(prefix)
+                entry.prefix_placeholder = placeholder
             entries.append(entry)
         # bare directories need no paths.json entry; tar keeps them
     return entries

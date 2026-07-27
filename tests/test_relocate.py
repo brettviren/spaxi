@@ -48,3 +48,52 @@ def test_no_change_returns_none():
 
 def test_rewrite_non_elf_returns_none():
     assert relocate.rewrite_elf_rpaths(b"not elf", "bin/x", PREFIXES) is None
+
+
+# --- unify_prefix_refs (rodata / text absolute paths) --------------------
+
+# A longer own prefix and a shorter dependency prefix.
+ROD_OWN = "/opt/spack/linux/tar-1.35-" + "a" * 32
+ROD_DEP = "/opt/spack/linux/pigz-2.8-" + "b" * 32
+ROD = [ROD_OWN, ROD_DEP]
+
+
+def test_unify_no_reference_returns_none():
+    assert relocate.unify_prefix_refs(b"nothing here", ROD) == (b"nothing here", None)
+
+
+def test_unify_only_placeholder_prefix_unchanged():
+    data = (ROD_DEP + "/bin/pigz").encode()
+    out, ph = relocate.unify_prefix_refs(data, ROD)
+    assert ph == ROD_DEP and out == data  # nothing longer to fold
+
+
+def test_unify_binary_is_length_preserving():
+    # NUL-delimited segments, as in .rodata.  Own is longer than dep, so the
+    # shorter dep becomes the shared placeholder and own is folded onto it.
+    data = (b"\x00" + ROD_OWN.encode() + b"/libexec/rmt\x00"
+            + ROD_DEP.encode() + b"/bin/pigz\x00tail")
+    out, ph = relocate.unify_prefix_refs(data, ROD)
+    assert ph == ROD_DEP
+    assert len(out) == len(data)                 # offsets preserved
+    assert ROD_OWN.encode() not in out           # own folded away
+    assert ROD_DEP.encode() + b"/libexec/rmt\x00" in out
+    assert ROD_DEP.encode() + b"/bin/pigz\x00" in out
+
+
+def test_unify_text_may_change_length():
+    data = (ROD_OWN + " and " + ROD_DEP).encode()  # no NUL -> text
+    out, ph = relocate.unify_prefix_refs(data, ROD)
+    assert ph == ROD_DEP
+    assert out == (ROD_DEP + " and " + ROD_DEP).encode()
+
+
+def test_unify_maps_to_env_prefix_on_replacement():
+    # Simulate conda's install-time step: placeholder -> env prefix.
+    data = (b"\x00" + ROD_OWN.encode() + b"/libexec/rmt\x00"
+            + ROD_DEP.encode() + b"/bin/pigz\x00")
+    out, ph = relocate.unify_prefix_refs(data, ROD)
+    env = b"/home/u/.pixi/envs/default"
+    installed = out.replace(ph.encode(), env)
+    assert env + b"/libexec/rmt\x00" in installed
+    assert env + b"/bin/pigz\x00" in installed

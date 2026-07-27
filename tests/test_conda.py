@@ -162,6 +162,51 @@ def test_build_conda_package_text_only_unconstrained(tmp_path):
     assert result.prefix_limit is None
 
 
+def test_scan_prefix_unifies_dependency_prefixes(tmp_path):
+    # A binary embedding both its own prefix and a (shorter) dependency
+    # prefix in NUL-delimited rodata; both must fold onto one placeholder.
+    own = "/opt/spack/linux/tarpkg-1.35-" + "a" * 32
+    dep = "/opt/spack/linux/pigz-2.8-" + "b" * 32
+    prefix = tmp_path / ("tarpkg-1.35-" + "a" * 32)
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / ".spack").mkdir()
+    payload = (b"\x7fELF\x00\x00"
+               + own.encode() + b"/libexec/rmt\x00"
+               + dep.encode() + b"/bin/pigz\x00tail")
+    (prefix / "bin" / "app").write_bytes(payload)
+    (prefix / "bin" / "app").chmod(0o755)
+
+    entries = conda.scan_prefix(prefix, [own, dep], tmp_path / "stage")
+    app = next(e for e in entries if e.path == "bin/app")
+    assert app.file_mode == "binary"
+    assert app.prefix_placeholder == dep          # the shorter, shared one
+    staged = app.source.read_bytes()
+    assert len(staged) == len(payload)            # length preserved
+    assert own.encode() not in staged
+    assert dep.encode() + b"/libexec/rmt" in staged
+    assert dep.encode() + b"/bin/pigz" in staged
+    assert app.source.stat().st_mode & 0o111      # exec bit preserved
+
+
+def test_scan_prefix_unifies_in_text(tmp_path):
+    own = "/opt/spack/linux/foopkg-1.0-" + "a" * 32
+    dep = "/opt/spack/linux/bar-2.0-" + "b" * 32
+    prefix = tmp_path / ("foopkg-1.0-" + "a" * 32)
+    (prefix / "lib" / "pkgconfig").mkdir(parents=True)
+    (prefix / ".spack").mkdir()
+    pc = f"prefix={own}\nCflags: -I{dep}/include\n"
+    (prefix / "lib" / "pkgconfig" / "foo.pc").write_text(pc)
+
+    entries = conda.scan_prefix(prefix, [own, dep], tmp_path / "stage")
+    e = next(x for x in entries if x.path == "lib/pkgconfig/foo.pc")
+    assert e.file_mode == "text"
+    assert e.prefix_placeholder == dep
+    staged = e.source.read_text()
+    assert own not in staged
+    assert f"prefix={dep}" in staged
+    assert f"-I{dep}/include" in staged
+
+
 def test_build_conda_package_missing_prefix(tmp_path):
     meta = conda.PackageMeta("x", "1", "b", "linux-64")
     with pytest.raises(conda.CondaBuildError):
