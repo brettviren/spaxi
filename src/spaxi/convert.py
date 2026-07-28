@@ -68,10 +68,29 @@ def _discover(spack: Spack, root: dict, with_deps: bool) -> list[_Plan]:
     All ``spack`` invocations happen here so the parallel build phase
     touches only the filesystem.  Externals are recorded but not
     recursed into (their subtree lives outside the spack store).
+
+    ``spack find`` results are memoized by hash: a heavily shared node
+    (glibc, gcc-runtime, ...) is a dependency edge of many packages but is
+    resolved from Spack only once.
     """
     todo = [root]
     seen: set[str] = set()
     plan: list[_Plan] = []
+    resolved: dict[str, dict] = {root["hash"]: root}  # hash -> full node
+    prefixes: dict[str, Path] = {}                    # hash -> install prefix
+
+    def resolve(spec_hash: str, name: str) -> dict:
+        node = resolved.get(spec_hash)
+        if node is None:
+            log.debug("resolving dependency %s/%s", name, spec_hash[:7])
+            node = resolved[spec_hash] = spack.resolve_one(f"/{spec_hash}")
+        return node
+
+    def prefix_of(spec_hash: str) -> Path:
+        path = prefixes.get(spec_hash)
+        if path is None:
+            path = prefixes[spec_hash] = spack.prefix(spec_hash)
+        return path
 
     while todo:
         node = todo.pop(0)
@@ -90,11 +109,9 @@ def _discover(spack: Spack, root: dict, with_deps: bool) -> list[_Plan]:
             deptypes = set(dep.get("parameters", {}).get("deptypes", []))
             if not deptypes & conda.RUNTIME_DEPTYPES:
                 continue
-            log.debug("resolving dependency %s/%s of %s",
-                      dep["name"], dep["hash"][:7], node["name"])
-            dep_nodes[dep["hash"]] = spack.resolve_one(f"/{dep['hash']}")
+            dep_nodes[dep["hash"]] = resolve(dep["hash"], dep["name"])
 
-        prefix = spack.prefix(node["hash"])
+        prefix = prefix_of(node["hash"])
         plan.append(_Plan(node, dep_nodes, prefix))
 
         if _node_is_external(node, prefix):

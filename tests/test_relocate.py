@@ -52,10 +52,11 @@ def test_rewrite_non_elf_returns_none():
 
 # --- unify_prefix_refs (rodata / text absolute paths) --------------------
 
-# A longer own prefix and a shorter dependency prefix.
-ROD_OWN = "/opt/spack/linux/tar-1.35-" + "a" * 32
-ROD_DEP = "/opt/spack/linux/pigz-2.8-" + "b" * 32
+# A longer own prefix and a genuinely shorter dependency prefix.
+ROD_OWN = "/opt/spack/linux/tarball-1.35-" + "a" * 32
+ROD_DEP = "/opt/spack/linux/pz-2.8-" + "b" * 32
 ROD = [ROD_OWN, ROD_DEP]
+assert len(ROD_DEP) < len(ROD_OWN)
 
 
 def test_unify_no_reference_returns_none():

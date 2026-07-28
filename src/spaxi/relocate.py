@@ -213,7 +213,12 @@ def unify_prefix_refs(data: bytes, prefixes: list[str]) -> tuple[bytes, str | No
     freely.  Because the placeholder is the shortest prefix, every other
     reference is at least as long and thus always fits.
     """
-    referenced = sorted({p for p in prefixes if p.encode() in data}, key=len)
+    # Order by (length, string) so the chosen placeholder -- and thus the
+    # produced bytes -- are deterministic even when prefixes tie in length
+    # (reproducible builds); the shortest is the fold target so every other
+    # reference is at least as long and fits when replaced in place.
+    referenced = sorted({p for p in prefixes if p.encode() in data},
+                        key=lambda p: (len(p), p))
     if not referenced:
         return data, None
     placeholder = referenced[0]
@@ -224,7 +229,8 @@ def unify_prefix_refs(data: bytes, prefixes: list[str]) -> tuple[bytes, str | No
     common = placeholder.encode()
     # Replace longer strings first so a shorter prefix can never chew into a
     # longer one that contains it as a leading substring.
-    target_bytes = sorted((p.encode() for p in targets), key=len, reverse=True)
+    target_bytes = sorted((p.encode() for p in targets),
+                          key=lambda b: (len(b), b), reverse=True)
 
     if b"\0" in data:
         buf = bytearray(data)
