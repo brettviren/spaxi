@@ -67,6 +67,44 @@ def test_scan_prefix(fake_prefix):
     assert not any(p.startswith(".spack") for p in entries)
 
 
+def test_conda_version():
+    # Hyphens (illegal in conda versions) become underscores; dots and
+    # alphanumerics are preserved untouched.
+    assert conda.conda_version("1.2.0-2024-08-16") == "1.2.0_2024_08_16"
+    assert conda.conda_version("1.2.3") == "1.2.3"
+    assert conda.conda_version("2.8.0-rc1") == "2.8.0_rc1"
+    # Any other illegal character is also folded to underscore.
+    assert conda.conda_version("1.0~beta+git") == "1.0_beta_git"
+
+
+def test_meta_from_spec_sanitizes_versions():
+    # A hyphenated spack version must be sanitized identically for the
+    # package's own version and for a dependent's exact pin, so the channel
+    # stays internally consistent (this is the rapidjson pixi-solve bug).
+    dep_hash = "rjsonhash0123456789abcdefghijklm"
+    node = {
+        "name": "rapidjson", "version": "1.2.0-2024-08-16", "hash": dep_hash,
+        "arch": {"platform": "linux", "target": {"name": "zen4", "parents": []}},
+        "dependencies": [],
+    }
+    meta = conda.meta_from_spec(node, {})
+    assert meta.version == "1.2.0_2024_08_16"
+    assert "-" not in meta.version
+
+    parent = {
+        "name": "arrow", "version": "23.0.1", "hash": "p" * 32,
+        "arch": {"platform": "linux", "target": {"name": "zen4", "parents": []}},
+        "dependencies": [
+            {"name": "rapidjson", "hash": dep_hash,
+             "parameters": {"deptypes": ["link"]}},
+        ],
+    }
+    dep_nodes = {dep_hash: {"name": "rapidjson", "version": "1.2.0-2024-08-16",
+                            "hash": dep_hash}}
+    parent_meta = conda.meta_from_spec(parent, dep_nodes)
+    assert parent_meta.depends == [f"rapidjson 1.2.0_2024_08_16 {dep_hash}"]
+
+
 def test_meta_from_spec(fake_prefix):
     _, node = fake_prefix
     dep_nodes = {

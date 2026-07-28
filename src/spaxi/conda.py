@@ -19,6 +19,7 @@ import io
 import json
 import logging
 import os
+import re
 import tarfile
 import tempfile
 import time
@@ -89,6 +90,27 @@ VIRTUAL_PACKAGES = {
 
 class CondaBuildError(Exception):
     """Conversion to a conda package failed."""
+
+
+# conda/rattler version strings admit only ``[*.+!_0-9a-z]`` (a hyphen is the
+# name-version-build separator in a package filename, so it is illegal inside a
+# version).  Spack versions freely use ``-`` (e.g. ``1.2.0-2024-08-16``), which
+# rattler then drops as an unparseable candidate.  Map every character that is
+# not a letter, digit or dot onto ``_`` (itself legal and treated like a dot in
+# ordering).  The build hash keeps distinct packages unique, so any version
+# collision this could introduce is harmless.
+_VERSION_ILLEGAL = re.compile(r"[^0-9A-Za-z.]")
+
+
+def conda_version(spack_version: str) -> str:
+    """Sanitize a Spack version string into a conda-valid version.
+
+    Replaces every character conda forbids in a version -- most importantly the
+    hyphen -- with an underscore, so the package is solvable by pixi/conda.  The
+    same transform must apply to a package's own version and to every dependency
+    pin, so a converted channel stays internally consistent.
+    """
+    return _VERSION_ILLEGAL.sub("_", spack_version)
 
 
 def subdir_for(node: dict) -> str:
@@ -333,16 +355,17 @@ def meta_from_spec(node: dict, dep_nodes: dict[str, dict]) -> PackageMeta:
             raise CondaBuildError(
                 f"missing spec node for runtime dependency {dep['name']}/{dep['hash'][:7]}"
             )
+        dep_version = conda_version(str(dep_node["version"]))
         virtual = VIRTUAL_PACKAGES.get(dep["name"])
         if virtual:
-            depends.append(f"{virtual} >={dep_node['version']}")
+            depends.append(f"{virtual} >={dep_version}")
         else:
             depends.append(
-                f"{dep['name']} {dep_node['version']} {dep_node['hash']}"
+                f"{dep['name']} {dep_version} {dep_node['hash']}"
             )
     return PackageMeta(
         name=node["name"],
-        version=str(node["version"]),
+        version=conda_version(str(node["version"])),
         build=node["hash"],
         subdir=subdir_for(node),
         depends=sorted(depends),
