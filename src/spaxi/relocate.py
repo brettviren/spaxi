@@ -29,6 +29,7 @@ one common placeholder, since conda merges every package into one prefix so
 placeholder lets conda's install-time replacement remap them all at once.
 """
 
+import os
 import posixpath
 import struct
 
@@ -194,6 +195,32 @@ def _rewrite(buf: bytearray, file_relpath: str,
     return bytes(buf) if changed else None
 
 
+def _referenced_prefixes(data: bytes, prefixes: list[str]) -> list[str]:
+    """Which of ``prefixes`` actually appear in ``data``.
+
+    Every closure prefix shares a common leading string, so we scan for that
+    anchor once and test the (few) candidate prefixes at each hit -- instead
+    of scanning the whole file once per prefix, which for a big binary and a
+    large closure is the dominant, GIL-held cost of relocation.
+    """
+    encoded = [(p, p.encode()) for p in prefixes]
+    anchor = os.path.commonprefix(list(prefixes)).encode()
+    if not anchor:
+        return [p for p, pb in encoded if pb in data]
+    present: list[str] = []
+    seen: set[str] = set()
+    i = data.find(anchor)
+    while i >= 0:
+        for p, pb in encoded:
+            if p not in seen and data.startswith(pb, i):
+                seen.add(p)
+                present.append(p)
+        if len(seen) == len(encoded):
+            break
+        i = data.find(anchor, i + 1)
+    return present
+
+
 def unify_prefix_refs(data: bytes, prefixes: list[str]) -> tuple[bytes, str | None]:
     """Fold every embedded closure-prefix reference onto one placeholder.
 
@@ -217,7 +244,7 @@ def unify_prefix_refs(data: bytes, prefixes: list[str]) -> tuple[bytes, str | No
     # produced bytes -- are deterministic even when prefixes tie in length
     # (reproducible builds); the shortest is the fold target so every other
     # reference is at least as long and fits when replaced in place.
-    referenced = sorted({p for p in prefixes if p.encode() in data},
+    referenced = sorted(_referenced_prefixes(data, prefixes),
                         key=lambda p: (len(p), p))
     if not referenced:
         return data, None

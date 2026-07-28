@@ -136,8 +136,69 @@ class PathEntry:
         return d
 
 
+@dataclass
+class _ScanContext:
+    """Per-prefix settings shared by every :func:`_scan_file` call."""
+
+    prefix: Path
+    own_bytes: bytes
+    relocating: bool
+    root_bytes: bytes
+    relocate_prefixes: list[str] | None
+    stage_dir: Path | None
+
+
+def _scan_file(path: Path, ctx: _ScanContext) -> PathEntry | None:
+    """Classify one filesystem entry (or None for a bare directory)."""
+    rel = path.relative_to(ctx.prefix)
+    if path.is_symlink():
+        target = path.resolve()
+        sha = _sha256_file(target) if target.is_file() else None
+        size = target.stat().st_size if target.is_file() else 0
+        return PathEntry(str(rel), "softlink", sha, size)
+    if not path.is_file():
+        return None  # bare directory: tar keeps it, no paths.json entry
+
+    data = path.read_bytes()
+    source = None
+    placeholder = None
+    if ctx.relocating and ctx.root_bytes and ctx.root_bytes in data:
+        changed = False
+        rewritten = relocate.rewrite_elf_rpaths(
+            data, str(rel), ctx.relocate_prefixes)
+        if rewritten is not None:
+            data = rewritten
+            changed = True
+        folded, placeholder = relocate.unify_prefix_refs(
+            data, ctx.relocate_prefixes)
+        if folded is not data:
+            data = folded
+            changed = True
+        # Stage only when bytes actually changed.  A placeholder with no
+        # byte change means the file already contains it verbatim, so it can
+        # be tarred straight from the install prefix.
+        if changed:
+            source = ctx.stage_dir / rel
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(data)
+            source.chmod(path.stat().st_mode)
+            log.debug("relocated %s", rel)
+    elif not ctx.relocating and ctx.own_bytes in data:
+        placeholder = str(ctx.prefix)
+
+    entry = PathEntry(
+        str(rel), "hardlink",
+        hashlib.sha256(data).hexdigest(), len(data), source=source,
+    )
+    if placeholder is not None:
+        entry.file_mode = "binary" if _is_binary(data) else "text"
+        entry.prefix_placeholder = placeholder
+    return entry
+
+
 def scan_prefix(prefix: Path, relocate_prefixes: list[str] | None = None,
-                stage_dir: Path | None = None) -> list[PathEntry]:
+                stage_dir: Path | None = None,
+                executor=None) -> list[PathEntry]:
     """Walk a Spack install prefix and classify its payload files.
 
     The Spack-internal ``.spack`` directory is excluded.  Files that
@@ -151,9 +212,12 @@ def scan_prefix(prefix: Path, relocate_prefixes: list[str] | None = None,
     and drive the recorded digest, size and prefix marking; the placeholder
     that conda replaces on install is the one chosen by the fold.  Without
     those arguments only the package's own prefix is marked, unchanged.
+
+    Per-file work (read, hash, relocation) is independent, so an optional
+    ``executor`` runs it concurrently -- this is where a single large
+    package's thousands of files parallelize.
     """
     prefix = Path(prefix).resolve()
-    own_bytes = str(prefix).encode()
     relocating = bool(relocate_prefixes) and stage_dir is not None
     # A single cheap gate: any closure prefix contains the common root, so a
     # file lacking the root needs no relocation scan at all.
@@ -163,53 +227,15 @@ def scan_prefix(prefix: Path, relocate_prefixes: list[str] | None = None,
             root_bytes = os.path.commonpath(relocate_prefixes).encode()
         except ValueError:
             root_bytes = b""
-    entries: list[PathEntry] = []
-    for path in sorted(prefix.rglob("*")):
-        rel = path.relative_to(prefix)
-        if rel.parts[0] == SPACK_METADIR:
-            continue
-        if path.is_symlink():
-            target = path.resolve()
-            sha = _sha256_file(target) if target.is_file() else None
-            size = target.stat().st_size if target.is_file() else 0
-            entries.append(PathEntry(str(rel), "softlink", sha, size))
-        elif path.is_file():
-            data = path.read_bytes()
-            source = None
-            placeholder = None
-            if relocating and root_bytes and root_bytes in data:
-                changed = False
-                rewritten = relocate.rewrite_elf_rpaths(
-                    data, str(rel), relocate_prefixes)
-                if rewritten is not None:
-                    data = rewritten
-                    changed = True
-                folded, placeholder = relocate.unify_prefix_refs(
-                    data, relocate_prefixes)
-                if folded is not data:
-                    data = folded
-                    changed = True
-                # Stage only when bytes actually changed.  A placeholder with
-                # no byte change means the file already contains it verbatim,
-                # so it can be tarred straight from the install prefix.
-                if changed:
-                    source = stage_dir / rel
-                    source.parent.mkdir(parents=True, exist_ok=True)
-                    source.write_bytes(data)
-                    source.chmod(path.stat().st_mode)
-                    log.debug("relocated %s", rel)
-            elif not relocating and own_bytes in data:
-                placeholder = str(prefix)
-            entry = PathEntry(
-                str(rel), "hardlink",
-                hashlib.sha256(data).hexdigest(), len(data), source=source,
-            )
-            if placeholder is not None:
-                entry.file_mode = "binary" if _is_binary(data) else "text"
-                entry.prefix_placeholder = placeholder
-            entries.append(entry)
-        # bare directories need no paths.json entry; tar keeps them
-    return entries
+    ctx = _ScanContext(prefix, str(prefix).encode(), relocating, root_bytes,
+                       relocate_prefixes, stage_dir)
+    paths = [p for p in sorted(prefix.rglob("*"))
+             if p.relative_to(prefix).parts[0] != SPACK_METADIR]
+    if executor is not None:
+        entries = executor.map(lambda p: _scan_file(p, ctx), paths)
+    else:
+        entries = (_scan_file(p, ctx) for p in paths)
+    return [e for e in entries if e is not None]
 
 
 @dataclass
@@ -337,6 +363,7 @@ def build_conda_package(
     about: dict | None = None,
     compression_level: int = DEFAULT_COMPRESSION_LEVEL,
     relocate_prefixes: list[str] | None = None,
+    executor=None,
 ) -> BuildResult:
     """Convert a Spack install prefix into a .conda package file.
 
@@ -344,6 +371,7 @@ def build_conda_package(
     ``outdir``) and any binary-relocation prefix-length constraint.  When
     ``relocate_prefixes`` (the Spack prefixes of the converted closure) is
     given, ELF RPATHs referencing them are rewritten ``$ORIGIN``-relative.
+    An optional ``executor`` parallelizes the per-file scan/relocation.
     """
     prefix = Path(prefix)
     if not prefix.is_dir():
@@ -362,10 +390,12 @@ def build_conda_package(
         # dependencies.  They still concretize as runtime-dependency nodes,
         # so they must exist in the channel; build empty metapackages.
         log.debug("scanning install prefix %s", prefix)
-        entries = scan_prefix(prefix, relocate_prefixes, stage_dir)
+        t0 = time.perf_counter()
+        entries = scan_prefix(prefix, relocate_prefixes, stage_dir, executor)
         total_bytes = sum(e.size_in_bytes for e in entries)
-        log.debug("scanned %d files, %s in %s",
-                  len(entries), _human_bytes(total_bytes), meta.filestem)
+        log.debug("scanned %d files, %s in %s (%.1fs)", len(entries),
+                  _human_bytes(total_bytes), meta.filestem,
+                  time.perf_counter() - t0)
 
         # Only binary files that embed the prefix constrain the install
         # prefix length; text replacement may grow freely.  All such files
@@ -383,6 +413,7 @@ def build_conda_package(
         files_txt = "".join(e.path + "\n" for e in entries)
 
         log.debug("archiving %d files (%s)", len(entries), _human_bytes(total_bytes))
+        t0 = time.perf_counter()
         pkg_tar = tmp / "pkg.tar"
         with tarfile.open(pkg_tar, "w") as tar:
             for entry in entries:
@@ -402,16 +433,18 @@ def build_conda_package(
             )
             if spec_json.is_file():
                 _tar_add(tar, spec_json, "info/spack-spec.json")
+        log.debug("archived %s (%.1fs)", meta.filestem, time.perf_counter() - t0)
 
         log.debug("compressing %s (%s payload, zstd level %d)",
                   outpath.name, _human_bytes(total_bytes), compression_level)
+        t0 = time.perf_counter()
         with zipfile.ZipFile(outpath, "w", zipfile.ZIP_STORED) as zf:
             zf.writestr("metadata.json", json.dumps({"conda_pkg_format_version": 2}))
             _compress_into_zip(zf, f"info-{meta.filestem}.tar.zst", info_tar,
                                compression_level)
             _compress_into_zip(zf, f"pkg-{meta.filestem}.tar.zst", pkg_tar,
                                compression_level)
-    log.debug("wrote %s (%s on disk)", outpath.name,
-              _human_bytes(outpath.stat().st_size))
+    log.debug("wrote %s (%s on disk, %.1fs)", outpath.name,
+              _human_bytes(outpath.stat().st_size), time.perf_counter() - t0)
 
     return BuildResult(outpath, prefix_limit)

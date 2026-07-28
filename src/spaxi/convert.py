@@ -12,7 +12,9 @@ and zstd, all CPU-bound and independent -- and may run in a thread pool
 
 import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -22,6 +24,30 @@ from . import conda
 from .spack import Spack
 
 log = logging.getLogger(__name__)
+
+# Per-file scan work (read + hash + relocate) is bounded by the GIL, memory
+# bandwidth and I/O rather than raw CPU, so it stops scaling after a handful
+# of threads and over-subscription hurts.  Cap the file pool well below the
+# package-level ``jobs`` (which parallelizes the GIL-free zstd across
+# packages and does scale).
+FILE_SCAN_WORKERS = 8
+
+
+@contextmanager
+def _maybe_pool(workers: int):
+    """A thread pool for per-file work, or None when running single-threaded.
+
+    Kept separate from the package pool so a package worker may block on its
+    file tasks without starving (or deadlocking) its own pool.
+    """
+    if workers <= 1:
+        yield None
+        return
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        yield pool
+    finally:
+        pool.shutdown(wait=True)
 
 
 @dataclass
@@ -131,11 +157,13 @@ def _convert_one(
     compression_level: int,
     relocate_prefixes: list[str] | None,
     index_lock: Lock,
+    file_executor=None,
 ) -> Converted:
     """Convert a single planned package (thread-pool worker).
 
     The expensive build (scan/hash/zstd) runs unlocked; only the shared
-    repodata update is serialized behind ``index_lock``.
+    repodata update is serialized behind ``index_lock``.  ``file_executor``
+    (a pool distinct from the package pool) parallelizes the per-file scan.
     """
     node, dep_nodes, prefix = plan.node, plan.dep_nodes, plan.prefix
 
@@ -155,7 +183,7 @@ def _convert_one(
     log.debug("building %s", meta.filestem)
     result = conda.build_conda_package(
         prefix, meta, dest.parent, compression_level=compression_level,
-        relocate_prefixes=relocate_prefixes)
+        relocate_prefixes=relocate_prefixes, executor=file_executor)
     staged, record = channel_mod.stage_package(
         Path(channel_dir), result.path, meta.index_json())
     with index_lock:
@@ -187,7 +215,10 @@ def convert_spec(
     discovery order.
     """
     root = spack.resolve_one(spec)
+    t0 = time.perf_counter()
     plan = _discover(spack, root, with_deps)
+    log.debug("phase 'discover' complete: %d package(s) in %.1fs",
+              len(plan), time.perf_counter() - t0)
 
     workers = _resolve_jobs(jobs)
     total = len(plan)
@@ -207,24 +238,32 @@ def convert_spec(
 
     index_lock = Lock()
     results: list[Converted] = [None] * total  # type: ignore[list-item]
+    t0 = time.perf_counter()
 
-    def build(i: int) -> None:
-        results[i] = _convert_one(
-            plan[i], channel_dir, force, compression_level,
-            relocate_prefixes, index_lock)
+    # Two pools: packages fan out across ``pool``; within each package the
+    # per-file scan fans out across ``files`` (capped -- see FILE_SCAN_WORKERS).
+    # They are separate pools so a package worker can block on file work
+    # without deadlocking its own pool.
+    with _maybe_pool(min(workers, FILE_SCAN_WORKERS)) as files:
+        def build(i: int) -> None:
+            results[i] = _convert_one(
+                plan[i], channel_dir, force, compression_level,
+                relocate_prefixes, index_lock, files)
 
-    if workers == 1:
-        for i in range(total):
-            build(i)
-            log.debug("converted %d/%d %s", i + 1, total, results[i].name)
-    else:
-        done = 0
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(build, i): i for i in range(total)}
-            for future in as_completed(futures):
-                future.result()  # re-raise any worker exception
-                done += 1
-                name = results[futures[future]].name
-                log.debug("converted %d/%d %s", done, total, name)
+        if workers == 1:
+            for i in range(total):
+                build(i)
+                log.debug("converted %d/%d %s", i + 1, total, results[i].name)
+        else:
+            done = 0
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(build, i): i for i in range(total)}
+                for future in as_completed(futures):
+                    future.result()  # re-raise any worker exception
+                    done += 1
+                    name = results[futures[future]].name
+                    log.debug("converted %d/%d %s", done, total, name)
 
+    log.debug("phase 'build' complete: %d package(s) in %.1fs",
+              total, time.perf_counter() - t0)
     return results

@@ -207,6 +207,31 @@ def test_scan_prefix_unifies_in_text(tmp_path):
     assert f"-I{dep}/include" in staged
 
 
+def test_scan_prefix_executor_matches_serial(tmp_path):
+    # Parallel per-file scanning must produce exactly the same entries
+    # (same order, digests, relocation) as the serial path.
+    from concurrent.futures import ThreadPoolExecutor
+
+    own = "/opt/spack/linux/many-1.0-" + "a" * 32
+    dep = "/opt/spack/linux/d-1.0-" + "b" * 32
+    prefix = tmp_path / ("many-1.0-" + "a" * 32)
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / ".spack").mkdir()
+    for i in range(25):
+        (prefix / "bin" / f"f{i:02d}").write_bytes(
+            b"\x7fELF\x00" + own.encode() + f"/x{i}\x00".encode()
+            + dep.encode() + b"/bin/tool\x00")
+
+    def digests(entries):
+        return [(e.path, e.sha256, e.prefix_placeholder) for e in entries]
+
+    serial = conda.scan_prefix(prefix, [own, dep], tmp_path / "s1")
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        par = conda.scan_prefix(prefix, [own, dep], tmp_path / "s2", executor=ex)
+    assert digests(serial) == digests(par)
+    assert all(e.prefix_placeholder == dep for e in par)
+
+
 def test_build_conda_package_missing_prefix(tmp_path):
     meta = conda.PackageMeta("x", "1", "b", "linux-64")
     with pytest.raises(conda.CondaBuildError):

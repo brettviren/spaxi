@@ -89,6 +89,26 @@ def test_unify_text_may_change_length():
     assert out == (ROD_DEP + " and " + ROD_DEP).encode()
 
 
+def test_referenced_prefixes_matches_naive():
+    root = "/opt/spack/linux/"
+    prefixes = [root + name + "-" + str(i) + "-" + c * 32
+                for i, (name, c) in enumerate(
+                    [("aa", "a"), ("bb", "b"), ("cc", "c"), ("dd", "d")])]
+    # Only two of the four appear (one at a path start, one mid-string).
+    data = (b"\x00" + prefixes[1].encode() + b"/lib/x.so\x00"
+            + b"PATH=" + prefixes[3].encode() + b"/bin\x00")
+    got = set(relocate._referenced_prefixes(data, prefixes))
+    naive = {p for p in prefixes if p.encode() in data}
+    assert got == naive == {prefixes[1], prefixes[3]}
+
+
+def test_referenced_prefixes_no_common_anchor_fallback():
+    # Prefixes with no shared leading string still resolve correctly.
+    prefixes = ["/a/tool-1-" + "x" * 32, "/b/lib-2-" + "y" * 32]
+    data = prefixes[0].encode() + b"/bin\x00"
+    assert relocate._referenced_prefixes(data, prefixes) == [prefixes[0]]
+
+
 def test_unify_maps_to_env_prefix_on_replacement():
     # Simulate conda's install-time step: placeholder -> env prefix.
     data = (b"\x00" + ROD_OWN.encode() + b"/libexec/rmt\x00"
