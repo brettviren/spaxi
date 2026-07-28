@@ -23,6 +23,7 @@ import tarfile
 import tempfile
 import time
 import zipfile
+from threading import Lock
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -40,6 +41,41 @@ SPACK_METADIR = ".spack"
 # maximum the zstandard build accepts.
 DEFAULT_COMPRESSION_LEVEL = 19
 MAX_COMPRESSION_LEVEL = zstandard.MAX_COMPRESSION_LEVEL
+
+# Rough payload bytes worth handing to one extra zstd worker thread; below
+# this, multithreading is pure overhead.  Used to size a package's request
+# against the shared budget.
+ZSTD_BYTES_PER_THREAD = 32 * 1024 * 1024
+
+
+class ZstdThreadBudget:
+    """A shared pool of zstd worker threads sized to the ``--jobs`` count.
+
+    zstd multithreading is GIL-free, so it -- not the Python-level package
+    pool -- is where big packages actually saturate the CPU.  Each package
+    takes a share proportional to its payload (small packages take 1); a lone
+    big package in the tail is granted most of the budget.  A slot floor of 1
+    keeps every package progressing, permitting mild, bounded over-subscription
+    rather than blocking.
+    """
+
+    def __init__(self, total: int):
+        self.total = max(1, total)
+        self._free = self.total
+        self._lock = Lock()
+
+    def take(self, want: int) -> int:
+        want = max(1, min(want, self.total))
+        with self._lock:
+            n = min(want, self._free)
+            if n < 1:
+                n = 1  # always make progress; allow slight overcommit
+            self._free -= n
+            return n
+
+    def give(self, n: int) -> None:
+        with self._lock:
+            self._free += n
 
 # Spack build/runtime deptypes that translate to conda "depends".
 RUNTIME_DEPTYPES = {"link", "run"}
@@ -334,9 +370,13 @@ def _tar_add_bytes(tar: tarfile.TarFile, arcname: str, data: bytes) -> None:
 
 
 def _compress_into_zip(zf: zipfile.ZipFile, arcname: str, tarpath: Path,
-                       level: int = DEFAULT_COMPRESSION_LEVEL) -> None:
-    """zstd-compress a tar file and store it in the .conda zip."""
-    cctx = zstandard.ZstdCompressor(level=level)
+                       level: int = DEFAULT_COMPRESSION_LEVEL,
+                       threads: int = 1) -> None:
+    """zstd-compress a tar file and store it in the .conda zip.
+
+    ``threads`` > 1 enables zstd's own (GIL-free) multithreaded compression.
+    """
+    cctx = zstandard.ZstdCompressor(level=level, threads=threads if threads > 1 else 0)
     with tempfile.NamedTemporaryFile() as ztmp:
         with open(tarpath, "rb") as fin:
             cctx.copy_stream(fin, ztmp)
@@ -364,6 +404,7 @@ def build_conda_package(
     compression_level: int = DEFAULT_COMPRESSION_LEVEL,
     relocate_prefixes: list[str] | None = None,
     executor=None,
+    zstd_budget: ZstdThreadBudget | None = None,
 ) -> BuildResult:
     """Convert a Spack install prefix into a .conda package file.
 
@@ -371,7 +412,8 @@ def build_conda_package(
     ``outdir``) and any binary-relocation prefix-length constraint.  When
     ``relocate_prefixes`` (the Spack prefixes of the converted closure) is
     given, ELF RPATHs referencing them are rewritten ``$ORIGIN``-relative.
-    An optional ``executor`` parallelizes the per-file scan/relocation.
+    An optional ``executor`` parallelizes the per-file scan/relocation, and
+    a ``zstd_budget`` grants this package a share of zstd worker threads.
     """
     prefix = Path(prefix)
     if not prefix.is_dir():
@@ -435,15 +477,26 @@ def build_conda_package(
                 _tar_add(tar, spec_json, "info/spack-spec.json")
         log.debug("archived %s (%.1fs)", meta.filestem, time.perf_counter() - t0)
 
-        log.debug("compressing %s (%s payload, zstd level %d)",
-                  outpath.name, _human_bytes(total_bytes), compression_level)
-        t0 = time.perf_counter()
-        with zipfile.ZipFile(outpath, "w", zipfile.ZIP_STORED) as zf:
-            zf.writestr("metadata.json", json.dumps({"conda_pkg_format_version": 2}))
-            _compress_into_zip(zf, f"info-{meta.filestem}.tar.zst", info_tar,
-                               compression_level)
-            _compress_into_zip(zf, f"pkg-{meta.filestem}.tar.zst", pkg_tar,
-                               compression_level)
+        # Big payloads get several zstd worker threads from the shared budget;
+        # the tiny info tarball never needs more than one.
+        threads = 1
+        if zstd_budget is not None:
+            threads = zstd_budget.take(total_bytes // ZSTD_BYTES_PER_THREAD)
+        try:
+            log.debug("compressing %s (%s payload, zstd level %d, %d thread(s))",
+                      outpath.name, _human_bytes(total_bytes), compression_level,
+                      threads)
+            t0 = time.perf_counter()
+            with zipfile.ZipFile(outpath, "w", zipfile.ZIP_STORED) as zf:
+                zf.writestr("metadata.json",
+                            json.dumps({"conda_pkg_format_version": 2}))
+                _compress_into_zip(zf, f"info-{meta.filestem}.tar.zst", info_tar,
+                                   compression_level)
+                _compress_into_zip(zf, f"pkg-{meta.filestem}.tar.zst", pkg_tar,
+                                   compression_level, threads=threads)
+        finally:
+            if zstd_budget is not None:
+                zstd_budget.give(threads)
     log.debug("wrote %s (%s on disk, %.1fs)", outpath.name,
               _human_bytes(outpath.stat().st_size), time.perf_counter() - t0)
 

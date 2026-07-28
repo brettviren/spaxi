@@ -83,7 +83,8 @@ def _help_if_bare(ctx, args) -> None:
               help="Also convert transitive runtime dependencies.")
 @click.option("--force", is_flag=True, help="Rebuild packages already in the channel.")
 @click.option("-j", "--jobs", type=int, default=1, show_default=True,
-              help="Convert this many packages in parallel (0 = one per CPU).")
+              help="Parallelism budget: packages converted at once and the "
+                   "pool of zstd compression threads (0 = one per CPU).")
 @click.option("-z", "--compression-level", type=int,
               default=conda.DEFAULT_COMPRESSION_LEVEL, show_default=True,
               help="zstd compression level for package payloads (1-22).")

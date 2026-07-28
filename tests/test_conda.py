@@ -17,6 +17,23 @@ def read_inner_tar(conda_file, member):
     return tarfile.open(fileobj=io.BytesIO(data))
 
 
+def test_zstd_thread_budget():
+    b = conda.ZstdThreadBudget(8)
+    # A big request during quiet time gets most of the budget.
+    assert b.take(6) == 6
+    # A second request is limited to what remains, but never below 1.
+    assert b.take(6) == 2
+    assert b.take(6) == 1          # over-subscribes by one rather than blocking
+    b.give(6)
+    b.give(2)
+    b.give(1)
+    # Requests are clamped to the total and floored at 1.
+    assert b.take(100) == 8
+    b.give(8)
+    assert b.take(0) == 1
+    b.give(1)
+
+
 def test_human_bytes():
     assert conda._human_bytes(0) == "0 B"
     assert conda._human_bytes(512) == "512 B"
