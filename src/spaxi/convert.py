@@ -20,7 +20,7 @@ from threading import Lock
 
 from . import channel as channel_mod
 from . import conda
-from .spack import Spack
+from .spack import Spack, SpackError
 
 log = logging.getLogger(__name__)
 
@@ -70,15 +70,21 @@ def _discover(spack: Spack, root: dict, with_deps: bool) -> list[_Plan]:
     touches only the filesystem.  Externals are recorded but not
     recursed into (their subtree lives outside the spack store).
 
-    ``spack find`` results are memoized by hash: a heavily shared node
-    (glibc, gcc-runtime, ...) is a dependency edge of many packages but is
-    resolved from Spack only once.
+    Two batch calls (``spack find -d``) fetch the whole DAG's nodes and
+    prefixes up front, so the traversal itself makes no per-node ``spack``
+    calls -- only a fallback for a hash the batch somehow missed.
     """
     todo = [root]
     seen: set[str] = set()
     plan: list[_Plan] = []
-    resolved: dict[str, dict] = {root["hash"]: root}  # hash -> full node
-    prefixes: dict[str, Path] = {}                    # hash -> install prefix
+
+    # Prime the node and prefix maps from the whole closure in two calls.
+    try:
+        resolved = {n["hash"]: n for n in spack.dag_nodes(root["hash"])}
+        prefixes = spack.dag_prefixes(root["hash"])
+    except SpackError:
+        resolved, prefixes = {}, {}
+    resolved.setdefault(root["hash"], root)
 
     def resolve(spec_hash: str, name: str) -> dict:
         node = resolved.get(spec_hash)

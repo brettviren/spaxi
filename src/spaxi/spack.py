@@ -151,6 +151,27 @@ class Spack:
         out = self.run("find", "--format", "{prefix}", f"/{spec_hash}")
         return Path(out.strip().splitlines()[0])
 
+    def dag_nodes(self, spec_hash: str) -> list[dict]:
+        """Every installed node in the DAG rooted at ``spec_hash``.
+
+        A single ``spack find -d --json`` returns the whole closure as full
+        spec-node dicts (same shape as :meth:`find`), so a conversion need
+        not resolve each dependency with its own ``spack`` call.
+        """
+        out = self.run("find", "-d", "--json", f"/{spec_hash}")
+        return json.loads(out)
+
+    def dag_prefixes(self, spec_hash: str) -> dict[str, Path]:
+        """Map every DAG node's hash to its install prefix in one call."""
+        out = self.run("find", "-d", "--format", "{hash} {prefix}",
+                       f"/{spec_hash}")
+        prefixes: dict[str, Path] = {}
+        for line in out.splitlines():
+            parts = line.split(None, 1)  # tolerates the tree indentation
+            if len(parts) == 2:
+                prefixes[parts[0]] = Path(parts[1])
+        return prefixes
+
     # ------------------------------------------------------------------
     # Spack environment operations (pixi-like subcommands)
 
