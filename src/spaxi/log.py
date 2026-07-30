@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brookhaven Science Associates, LLC.
+# SPDX-License-Identifier: Apache-2.0
+
 """Logging configuration for spaxi.
 
 A single ``setup_logging`` maps the general ``--log-sink``/``--log-level``

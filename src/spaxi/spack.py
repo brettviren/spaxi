@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brookhaven Science Associates, LLC.
+# SPDX-License-Identifier: Apache-2.0
+
 """Thin wrapper around the ``spack`` command line program.
 
 All interaction with Spack goes through this module.  It knows how to

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brookhaven Science Associates, LLC.
+# SPDX-License-Identifier: Apache-2.0
+
 """Author a pixi.toml dependency from a Spack spec (strategy 1 helper).
 
 ``spaxi add-spec <spec>`` concretizes the spec with Spack, renders its variants

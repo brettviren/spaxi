@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brookhaven Science Associates, LLC.
+# SPDX-License-Identifier: Apache-2.0
+
 """Maintain a local conda channel directory.
 
 A channel is a directory with one subdirectory per platform (subdir)

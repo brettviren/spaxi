@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brookhaven Science Associates, LLC.
+# SPDX-License-Identifier: Apache-2.0
+
 """pixi-like project management on top of Spack (strategy 2).
 
 A spaxi project is a directory holding:

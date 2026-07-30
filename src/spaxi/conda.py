@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brookhaven Science Associates, LLC.
+# SPDX-License-Identifier: Apache-2.0
+
 """Build conda packages from Spack install trees.
 
 A Spack package install area (prefix) is converted into a package in

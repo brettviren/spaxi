@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brookhaven Science Associates, LLC.
+# SPDX-License-Identifier: Apache-2.0
+
 """Map Spack spec variants to conda "flags" (CEP-45).
 
 A conda *flag* is a string matching ``^[a-z0-9_]+(:[a-z0-9_]+)?$`` recorded on

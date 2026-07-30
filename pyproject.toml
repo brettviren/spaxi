@@ -1,11 +1,13 @@
 [project]
 name = "spaxi"
-version = "0.1.0"
+version = "0.2.0"
 description = "A pixi-like end-user experience for Spack packages"
 readme = {file = "README.org", content-type = "text/org"}
 authors = [
     { name = "Brett Viren", email = "brett.viren@gmail.com" }
 ]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.13"
 dependencies = [
     "click>=8.4.2",
@@ -22,7 +24,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

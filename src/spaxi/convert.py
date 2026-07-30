@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brookhaven Science Associates, LLC.
+# SPDX-License-Identifier: Apache-2.0
+
 """Orchestrate Spack-to-conda package conversion (strategy 1).
 
 Resolves a user spec against the installed Spack packages and converts

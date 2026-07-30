@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Brookhaven Science Associates, LLC.
+# SPDX-License-Identifier: Apache-2.0
+
 """Rewrite ELF RPATH/RUNPATH entries to be ``$ORIGIN``-relative.
 
 Spack builds binaries with *absolute* RPATHs into per-package install
